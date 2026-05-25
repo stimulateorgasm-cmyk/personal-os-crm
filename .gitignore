@@ -1,0 +1,42 @@
+# Secrets and config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Database
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Cache and build
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+dist/
+build/
+.cache/
+.next/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*

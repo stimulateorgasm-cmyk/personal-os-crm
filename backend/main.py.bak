@@ -1,0 +1,1666 @@
+"""
+CRM API — единый бэкенд для Personal OS CRM.
+
+Пишет параллельно в локальную SQLite БД и в Notion.
+Источник правды пока Notion, локальная БД для фронтенда.
+
+POST /api/clients     — создать/обновить клиента
+GET  /api/clients     — список клиентов (с фильтрами)
+GET  /api/clients/:id — карточка клиента
+POST /api/quiz/submit — принять результат теста
+GET  /api/quiz/count  — счётчик участниц
+POST /api/quiz/send-pdf — отправка PDF в Telegram
+GET  /api/stats       — статистика воронки
+"""
+import asyncio
+import base64
+import hashlib
+import hmac
+import html
+import json
+import logging
+import os
+import sqlite3
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Optional
+
+import jwt as pyjwt
+
+import httpx
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+
+load_dotenv(Path(__file__).parent / ".env")
+
+NOTION_API_KEY = os.environ["NOTION_API_KEY"]
+NOTION_CLIENTS_DB_ID = os.environ["NOTION_CLIENTS_DB_ID"]
+NOTION_DEALS_DB_ID = os.environ["NOTION_DEALS_DB_ID"]
+NOTIFY_BOT_TOKEN = os.environ.get("NOTIFY_BOT_TOKEN", "")
+ASSISTANT_CHAT_ID = os.environ.get("ASSISTANT_CHAT_ID", "")
+QUIZ_BOT_TOKEN = os.environ.get("QUIZ_BOT_TOKEN", "")
+# Мост к AI: LiteLLM для tool_calls, Hermes Bridge для простых чатов
+LITELLM_URL = os.environ.get("LITELLM_URL", "http://127.0.0.1:8080/chat/completions")
+MIRA_API_URL = os.environ.get("MIRA_API_URL", "http://127.0.0.1:8081/api/chat")
+MIRA_MODEL = os.environ.get("MIRA_MODEL", "deepseek/deepseek-chat")
+
+NOTION_BASE = "https://api.notion.com/v1"
+
+# ─── Database config ────────────────────────────────────────────────────────────
+USE_PG = os.environ.get("USE_PG", "").lower() in ("true", "1", "yes")
+DB_PATH = Path(__file__).parent / "crm.db"
+
+if USE_PG:
+    import psycopg2
+    import psycopg2.extras
+    PG_URL = os.environ["DATABASE_URL"]
+    _pg_conn = None
+
+    def _get_pg_conn():
+        global _pg_conn
+        if _pg_conn is None or _pg_conn.closed:
+            _pg_conn = psycopg2.connect(PG_URL)
+        return _pg_conn
+
+    class DB:
+        """Обёртка вокруг psycopg2 для единообразия с SQLite-кодом."""
+
+        def __init__(self):
+            self._conn = _get_pg_conn()
+            self.cur = None
+
+        def execute(self, sql: str, params: tuple | list = ()):
+            self.cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            s = sql.replace("datetime('now')", "to_char(now(), 'YYYY-MM-DD HH24:MI:SS')")
+            s = s.replace(" LIKE ?", " ILIKE ?")
+            s = s.replace("?", "%s")
+            self.cur.execute(s, params)
+            return self.cur
+
+        def close(self):
+            self.cur = None  # don't close the pool, reuse connection
+
+        def commit(self):
+            self._conn.commit()
+
+        @property
+        def lastrowid(self):
+            if self.cur is None:
+                return None
+            if self.cur.description:
+                row = self.cur.fetchone()
+                return row[0] if row else None
+            c = self._conn.cursor()
+            try:
+                c.execute("SELECT lastval()")
+                return c.fetchone()[0]
+            except Exception:
+                return None
+else:
+    class DB:
+        """Обёртка вокруг sqlite3."""
+
+        def __init__(self):
+            self._conn = sqlite3.connect(str(DB_PATH))
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self.cur = None
+
+        def execute(self, sql: str, params: tuple | list = ()):
+            self.cur = self._conn.execute(sql, params)
+            return self.cur
+
+        def close(self):
+            self._conn.close()
+
+        def commit(self):
+            self._conn.commit()
+
+        @property
+        def lastrowid(self):
+            return self.cur.lastrowid if self.cur else None
+
+
+def _get_db() -> DB:
+    return DB()
+
+
+def _row(r) -> dict:
+    return dict(r)
+
+
+def _scalar(r):
+    """Fetch single value from first column of first row."""
+    if r is None:
+        return 0
+    if USE_PG:
+        row = r
+        if row:
+            return row.get(list(row.keys())[0], 0)
+        return 0
+    return r[0]
+
+# ─── JWT Auth ─────────────────────────────────────────────────────────────────
+JWT_SECRET = hashlib.sha256((NOTIFY_BOT_TOKEN or "").encode()).hexdigest()
+JWT_ALGO = "HS256"
+
+ALLOWED_CHAT_IDS = {
+    int(os.environ.get("ANTON_CHAT_ID", "0")),
+    int(os.environ.get("ASSISTANT_CHAT_ID", "0")),
+    int(os.environ.get("TONYROAR_CHAT_ID", "0")),
+}
+
+
+def _verify_telegram_login(data: dict) -> int | None:
+    received_hash = data.pop("hash", "")
+    check = "\n".join(f"{k}={v}" for k, v in sorted(data.items()))
+    secret = hashlib.sha256(NOTIFY_BOT_TOKEN.encode()).digest()
+    if hmac.new(secret, check.encode(), hashlib.sha256).hexdigest() != received_hash:
+        return None
+    uid = data.get("id")
+    if isinstance(uid, int) and uid in ALLOWED_CHAT_IDS:
+        return uid
+    return None
+
+
+def _create_jwt(user_id: int) -> str:
+    payload = {"user_id": user_id, "exp": datetime.utcnow() + timedelta(days=30)}
+    return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+def _get_current_user(request: Request) -> int | None:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    try:
+        payload = pyjwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGO])
+        return payload.get("user_id")
+    except Exception:
+        return None
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("crm")
+
+app = FastAPI(title="Personal OS CRM")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+
+def _init_db() -> None:
+    if USE_PG:
+        db = _get_db()
+        for stmt in [
+            "CREATE TABLE IF NOT EXISTS clients (id SERIAL PRIMARY KEY, notion_page_id TEXT, name TEXT NOT NULL DEFAULT '', telegram_nick TEXT DEFAULT '', telegram_id TEXT DEFAULT '', phone TEXT DEFAULT '', status TEXT DEFAULT 'Контакт', source TEXT DEFAULT '', last_account TEXT DEFAULT '', last_contact TEXT DEFAULT '', next_step TEXT DEFAULT '', summary TEXT DEFAULT '', follow_up_date TEXT DEFAULT '', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')), updated_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
+            "CREATE TABLE IF NOT EXISTS deals (id SERIAL PRIMARY KEY, notion_page_id TEXT, client_id INTEGER REFERENCES clients(id), title TEXT NOT NULL, status TEXT DEFAULT 'Ожидает', amount REAL DEFAULT 0, paid REAL DEFAULT 0, purchase_date TEXT DEFAULT '', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')), updated_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
+            "CREATE TABLE IF NOT EXISTS test_results (id SERIAL PRIMARY KEY, client_id INTEGER REFERENCES clients(id), telegram_id TEXT DEFAULT '', name TEXT DEFAULT '', phone TEXT DEFAULT '', age INTEGER, test_type TEXT DEFAULT 'female', freedom_score INTEGER DEFAULT 0, sexuality_score INTEGER DEFAULT 0, diagnosis TEXT DEFAULT '', utm_source TEXT DEFAULT '', answers TEXT DEFAULT '[]', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
+            "CREATE TABLE IF NOT EXISTS quiz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "INSERT INTO quiz_meta (key, value) VALUES ('female_count', '157') ON CONFLICT DO NOTHING",
+            "INSERT INTO quiz_meta (key, value) VALUES ('live_increment', '0') ON CONFLICT DO NOTHING",
+            "CREATE TABLE IF NOT EXISTS notes (id SERIAL PRIMARY KEY, client_id INTEGER REFERENCES clients(id), text TEXT NOT NULL, created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
+            "CREATE TABLE IF NOT EXISTS tasks (id SERIAL PRIMARY KEY, client_id INTEGER REFERENCES clients(id), title TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'follow_up', due_date TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
+            "CREATE TABLE IF NOT EXISTS telegram_messages (id SERIAL PRIMARY KEY, client_id INTEGER REFERENCES clients(id), telegram_id TEXT DEFAULT '', sender_type TEXT NOT NULL DEFAULT 'client', text TEXT NOT NULL DEFAULT '', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
+            "CREATE INDEX IF NOT EXISTS idx_tg_client ON telegram_messages(client_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tg_created ON telegram_messages(created_at)",
+            "CREATE TABLE IF NOT EXISTS mira_sessions (id SERIAL PRIMARY KEY, title TEXT DEFAULT 'Новый чат', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')), updated_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
+            "CREATE TABLE IF NOT EXISTS mira_messages (id SERIAL PRIMARY KEY, session_id INTEGER REFERENCES mira_sessions(id), role TEXT NOT NULL DEFAULT 'user', content TEXT NOT NULL DEFAULT '', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
+            "CREATE INDEX IF NOT EXISTS idx_mira_session ON mira_messages(session_id)",
+        ]:
+            db.execute(stmt)
+        db.commit()
+    else:
+        conn = _get_db()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                notion_page_id TEXT,
+                name TEXT NOT NULL DEFAULT '',
+                telegram_nick TEXT DEFAULT '',
+                telegram_id TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                status TEXT DEFAULT 'Контакт',
+                source TEXT DEFAULT '',
+                last_account TEXT DEFAULT '',
+                last_contact TEXT DEFAULT '',
+                next_step TEXT DEFAULT '',
+                summary TEXT DEFAULT '',
+                follow_up_date TEXT DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS deals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                notion_page_id TEXT,
+                client_id INTEGER REFERENCES clients(id),
+                title TEXT NOT NULL,
+                status TEXT DEFAULT 'Ожидает',
+                amount REAL DEFAULT 0,
+                paid REAL DEFAULT 0,
+                purchase_date TEXT DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS test_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER REFERENCES clients(id),
+                telegram_id TEXT DEFAULT '',
+                name TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                age INTEGER,
+                test_type TEXT DEFAULT 'female',
+                freedom_score INTEGER DEFAULT 0,
+                sexuality_score INTEGER DEFAULT 0,
+                diagnosis TEXT DEFAULT '',
+                utm_source TEXT DEFAULT '',
+                answers TEXT DEFAULT '[]',
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS quiz_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO quiz_meta (key, value) VALUES ('female_count', '157');
+            INSERT OR IGNORE INTO quiz_meta (key, value) VALUES ('live_increment', '0');
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER REFERENCES clients(id),
+                text TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER REFERENCES clients(id),
+                title TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'follow_up',
+                due_date TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS telegram_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER REFERENCES clients(id),
+                telegram_id TEXT DEFAULT '',
+                sender_type TEXT NOT NULL DEFAULT 'client',
+                text TEXT NOT NULL DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_tg_client ON telegram_messages(client_id);
+            CREATE INDEX IF NOT EXISTS idx_tg_created ON telegram_messages(created_at);
+            CREATE TABLE IF NOT EXISTS mira_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT DEFAULT 'Новый чат',
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS mira_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER REFERENCES mira_sessions(id),
+                role TEXT NOT NULL DEFAULT 'user',
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_mira_session ON mira_messages(session_id);
+        """)
+        conn.commit()
+        conn.close()
+
+
+_init_db()
+
+
+# ─── Models ───────────────────────────────────────────────────────────────────
+
+class ClientCreate(BaseModel):
+    name: str = ""
+    telegram_nick: str = ""
+    telegram_id: str = ""
+    phone: str = ""
+    status: str = "Контакт"
+    source: str = ""
+    last_account: str = ""
+    next_step: str = ""
+    summary: str = ""
+
+
+class QuizSubmit(BaseModel):
+    telegram_id: str | None = None
+    telegram_username: str | None = None
+    name: str | None = None
+    phone: str | None = None
+    age: int | None = None
+    test_type: str = "female"
+    freedom_score: int = 0
+    sexuality_score: int = 0
+    diagnosis: str = ""
+    utm_source: str | None = None
+    answers: list | None = None
+
+
+class SendPdfRequest(BaseModel):
+    telegram_id: str
+    pdf_base64: str
+
+
+# ─── Notion helpers ───────────────────────────────────────────────────────────
+
+def _notion_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+
+
+async def _notion_find_client(http: httpx.AsyncClient, username: str) -> dict | None:
+    resp = await http.post(
+        f"{NOTION_BASE}/databases/{NOTION_CLIENTS_DB_ID}/query",
+        json={"filter": {"property": "Telegram Ник", "rich_text": {"contains": username}}, "page_size": 5},
+    )
+    resp.raise_for_status()
+    for page in resp.json().get("results", []):
+        nick = "".join(t.get("plain_text", "") for t in page["properties"].get("Telegram Ник", {}).get("rich_text", []))
+        if nick.lstrip("@").lower() == username.lstrip("@").lower():
+            return page
+    return None
+
+
+async def _notion_create_client(http: httpx.AsyncClient, data: ClientCreate) -> str:
+    props: dict = {
+        "Имя": {"title": [{"text": {"content": data.name or data.telegram_nick or "Аноним"}}]},
+        "Статус": {"status": {"name": data.status}},
+    }
+    if data.telegram_nick:
+        props["Telegram Ник"] = {"rich_text": [{"text": {"content": data.telegram_nick}}]}
+    if data.source:
+        props["Источник"] = {"select": {"name": data.source}}
+    if data.telegram_id:
+        props["Telegram ID"] = {"rich_text": [{"text": {"content": data.telegram_id}}]}
+    if data.summary:
+        props["Контекст / Саммари"] = {"rich_text": [{"text": {"content": data.summary[:2000]}}]}
+
+    resp = await http.post(f"{NOTION_BASE}/pages", json={
+        "parent": {"database_id": NOTION_CLIENTS_DB_ID},
+        "properties": props,
+    })
+    resp.raise_for_status()
+    return resp.json()["id"]
+
+
+async def _notion_notify_quiz(result: QuizSubmit) -> None:
+    if not NOTIFY_BOT_TOKEN or not ASSISTANT_CHAT_ID:
+        return
+
+    def e(t: str | None) -> str:
+        return html.escape(t or "—")
+
+    name_display = result.name or result.telegram_username or "Аноним"
+    text = (
+        f"🧪 <b>Новый результат — {result.test_type}</b>\n"
+        f"👤 {e(name_display)}"
+        + (f" (@{e(result.telegram_username)})" if result.telegram_username else "")
+        + f"\n🔓 Свобода: {result.freedom_score}/40"
+        + f"\n💋 Сексуальность: {result.sexuality_score}/60"
+        + f"\n🎯 Диагноз: {e(result.diagnosis)}"
+        + (f"\n📊 UTM: {e(result.utm_source)}" if result.utm_source else "")
+    )
+    url = f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}/sendMessage"
+    async with httpx.AsyncClient(timeout=10) as tg:
+        resp = await tg.post(url, json={"chat_id": ASSISTANT_CHAT_ID, "text": text, "parse_mode": "HTML"})
+        if resp.status_code != 200:
+            logger.warning("Telegram notify failed: %s", resp.text)
+
+
+# ─── API: Auth ────────────────────────────────────────────────────────────────
+
+@app.post("/api/auth/telegram")
+async def auth_telegram(data: dict):
+    uid = _verify_telegram_login(data)
+    if uid is None:
+        raise HTTPException(401, "Unauthorized")
+    token = _create_jwt(uid)
+    return {"token": token, "user_id": uid}
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    uid = _get_current_user(request)
+    if uid is None:
+        raise HTTPException(401, "Unauthorized")
+    return {"user_id": uid}
+
+
+# ─── API: Notes ──────────────────────────────────────────────────────────────
+
+class NoteCreate(BaseModel):
+    text: str
+
+@app.get("/api/clients/{client_id}/notes")
+async def get_notes(client_id: int):
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM notes WHERE client_id = ? ORDER BY created_at DESC", (client_id,)
+    ).fetchall()
+    conn.close()
+    return {"notes": [_row(r) for r in rows]}
+
+@app.post("/api/clients/{client_id}/notes")
+async def create_note(client_id: int, data: NoteCreate):
+    conn = _get_db()
+    conn.execute("INSERT INTO notes (client_id, text, created_at) VALUES (?, ?, datetime('now'))", (client_id, data.text))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ─── API: Tasks ────────────────────────────────────────────────────────────────
+
+class TaskCreate(BaseModel):
+    title: str
+    task_type: str = "follow_up"
+    due_date: str = ""
+
+class TaskPatch(BaseModel):
+    status: Optional[str] = None
+    title: Optional[str] = None
+    task_type: Optional[str] = None
+    due_date: Optional[str] = None
+
+@app.get("/api/tasks")
+async def list_all_tasks(status: Optional[str] = Query(None), due_date: Optional[str] = Query(None)):
+    """Глобальный список задач с именем клиента."""
+    conn = _get_db()
+    sql = "SELECT tasks.*, clients.name as client_name, clients.telegram_nick FROM tasks LEFT JOIN clients ON tasks.client_id = clients.id"
+    where = []
+    params = []
+    if status:
+        where.append("tasks.status = ?")
+        params.append(status)
+    if due_date:
+        where.append("tasks.due_date = ?")
+        params.append(due_date)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY tasks.created_at DESC LIMIT 200"
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return {"tasks": [_row(r) for r in rows]}
+
+
+@app.get("/api/clients/{client_id}/tasks")
+async def get_client_tasks(client_id: int):
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE client_id = ? ORDER BY created_at DESC", (client_id,)
+    ).fetchall()
+    conn.close()
+    return {"tasks": [_row(r) for r in rows]}
+
+
+@app.post("/api/clients/{client_id}/tasks")
+async def create_client_task(client_id: int, data: TaskCreate):
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO tasks (client_id, title, type, due_date, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+        (client_id, data.title, data.task_type, data.due_date or ""),
+    )
+    new_id = conn.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": new_id}
+
+
+@app.patch("/api/tasks/{task_id}")
+async def patch_task(task_id: int, data: TaskPatch):
+    conn = _get_db()
+    updates = []
+    params = []
+    if data.status is not None:
+        updates.append("status = ?")
+        params.append(data.status)
+    if data.title is not None:
+        updates.append("title = ?")
+        params.append(data.title)
+    if data.task_type is not None:
+        updates.append("type = ?")
+        params.append(data.task_type)
+    if data.due_date is not None:
+        updates.append("due_date = ?")
+        params.append(data.due_date)
+    if not updates:
+        conn.close()
+        return {"ok": True}
+    params.append(task_id)
+    conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ─── API: Timeline & Messages ─────────────────────────────────────────────────
+
+class IncomingMessage(BaseModel):
+    telegram_username: str = ""
+    telegram_id: str = ""
+    sender_type: str = "client"   # client | personal | assistant
+    text: str = ""
+
+@app.get("/api/clients/{client_id}/timeline")
+async def get_timeline(client_id: int, limit: int = 200):
+    """Unified timeline: notes + telegram_messages, sorted by created_at ASC (old→new for chat)."""
+    conn = _get_db()
+    rows = conn.execute(
+        """
+        SELECT id, 'note' as type, 'personal' as sender, text, created_at FROM notes WHERE client_id = ?
+        UNION ALL
+        SELECT id, 'message' as type, sender_type as sender, text, created_at FROM telegram_messages WHERE client_id = ?
+        ORDER BY created_at ASC LIMIT ?
+        """,
+        (client_id, client_id, limit),
+    ).fetchall()
+    conn.close()
+    return {"items": [_row(r) for r in rows]}
+
+
+@app.post("/api/messages")
+async def receive_message(msg: IncomingMessage):
+    """Принять сообщение от Gateway/Telethon и записать в БД."""
+    if not msg.text.strip():
+        return {"ok": False, "error": "empty text"}
+
+    conn = _get_db()
+    client_id = None
+
+    # Try to find client by telegram_username first, then by telegram_id
+    if msg.telegram_username:
+        row = conn.execute(
+            "SELECT id FROM clients WHERE telegram_nick = ?",
+            (msg.telegram_username.lstrip("@"),)
+        ).fetchone()
+        if row:
+            client_id = row["id"]
+
+    if not client_id and msg.telegram_id:
+        row = conn.execute(
+            "SELECT id FROM clients WHERE telegram_id = ?",
+            (msg.telegram_id,)
+        ).fetchone()
+        if row:
+            client_id = row["id"]
+
+    if not client_id:
+        conn.close()
+        logger.info("Message from unknown user %s, ignored", msg.telegram_username or msg.telegram_id)
+        return {"ok": True, "ignored": True}
+
+    conn.execute(
+        "INSERT INTO telegram_messages (client_id, telegram_id, sender_type, text) VALUES (?, ?, ?, ?)",
+        (client_id, msg.telegram_id, msg.sender_type, msg.text),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "client_id": client_id}
+
+
+# ─── API: Clients ─────────────────────────────────────────────────────────────
+
+@app.post("/api/clients")
+async def create_client(data: ClientCreate):
+    """Создать клиента в локальной БД + Notion."""
+    notion_id = None
+    try:
+        async with httpx.AsyncClient(headers=_notion_headers(), timeout=15) as http:
+            notion_id = await _notion_create_client(http, data)
+    except Exception as e:
+        logger.warning("Notion create failed (continuing with local): %s", e)
+
+    conn = _get_db()
+    cur = conn.execute(
+        "INSERT INTO clients (notion_page_id, name, telegram_nick, telegram_id, phone, status, source, last_account, summary) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (notion_id, data.name, data.telegram_nick, data.telegram_id, data.phone,
+         data.status, data.source, data.last_account, data.summary))
+    client_id = conn.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": client_id, "notion_page_id": notion_id}
+
+
+@app.get("/api/clients")
+async def list_clients(
+    status: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(100),
+    offset: int = Query(0),
+):
+    conn = _get_db()
+    where = []
+    params = []
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    if source:
+        where.append("source = ?")
+        params.append(source)
+    if search:
+        where.append("(name LIKE ? OR telegram_nick LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    where_clause = (" WHERE " + " AND ".join(where)) if where else ""
+    total = _scalar(conn.execute(f"SELECT COUNT(*) FROM clients{where_clause}", params).fetchone())
+    rows = conn.execute(
+        f"SELECT * FROM clients{where_clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        params + [limit, offset],
+    ).fetchall()
+    conn.close()
+    clients = [_row(r) for r in rows]
+    return {"clients": clients, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/clients/{client_id}")
+async def get_client(client_id: int):
+    conn = _get_db()
+    row = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+    deals = conn.execute("SELECT * FROM deals WHERE client_id = ? ORDER BY created_at DESC", (client_id,)).fetchall()
+    test_results = conn.execute("SELECT * FROM test_results WHERE client_id = ? ORDER BY created_at DESC", (client_id,)).fetchall()
+    last_tg_msg = _scalar(conn.execute(
+        "SELECT MAX(created_at) FROM telegram_messages WHERE client_id = ?", (client_id,)
+    ).fetchone())
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Client not found")
+    result = dict(row)
+    if last_tg_msg and (not result.get("last_contact") or last_tg_msg > result["last_contact"]):
+        result["last_contact"] = last_tg_msg
+    return {
+        "client": result,
+        "deals": [dict(d) for d in deals],
+        "test_results": [dict(t) for t in test_results],
+    }
+
+
+# ─── PATCH клиента ─────────────────────────────────────────────────────────────
+
+class ClientPatch(BaseModel):
+    status: Optional[str] = None
+    next_step: Optional[str] = None
+    summary: Optional[str] = None
+    phone: Optional[str] = None
+    telegram_nick: Optional[str] = None
+    name: Optional[str] = None
+
+@app.patch("/api/clients/{client_id}")
+async def patch_client(client_id: int, data: ClientPatch):
+    """Обновить клиента (статус, поля)."""
+    conn = _get_db()
+    row = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Client not found")
+
+    updates = []
+    params = []
+    notion_props = {}
+
+    if data.status:
+        updates.append("status = ?")
+        params.append(data.status)
+        notion_props["Статус"] = {"status": {"name": data.status}}
+    if data.next_step is not None:
+        updates.append("next_step = ?")
+        params.append(data.next_step)
+        notion_props["Следующий шаг"] = {"rich_text": [{"text": {"content": data.next_step}}]}
+    if data.phone is not None:
+        updates.append("phone = ?")
+        params.append(data.phone)
+    if data.summary is not None:
+        updates.append("summary = ?")
+        params.append(data.summary)
+        notion_props["Контекст / Саммари"] = {"rich_text": [{"text": {"content": data.summary[:2000]}}]}
+    if data.telegram_nick is not None:
+        updates.append("telegram_nick = ?")
+        params.append(data.telegram_nick)
+        notion_props["Telegram Ник"] = {"rich_text": [{"text": {"content": data.telegram_nick}}]}
+    if data.name is not None:
+        updates.append("name = ?")
+        params.append(data.name)
+        notion_props["Имя"] = {"title": [{"text": {"content": data.name}}]}
+
+    # Обновление в Notion
+    notion_id = row["notion_page_id"]
+    if notion_id and notion_props:
+        try:
+            async with httpx.AsyncClient(headers=_notion_headers(), timeout=15) as http:
+                await http.patch(f"{NOTION_BASE}/pages/{notion_id}", json={"properties": notion_props})
+        except Exception as e:
+            logger.warning("Notion patch failed for %s: %s", client_id, e)
+
+    updates.append("updated_at = datetime('now')")
+    params.append(client_id)
+
+    conn.execute(f"UPDATE clients SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ─── API: Quiz ────────────────────────────────────────────────────────────────
+
+@app.post("/api/quiz/submit")
+async def quiz_submit(result: QuizSubmit):
+    """Принять результат теста. Пишет в локальную БД + Notion."""
+    source_label = "Женский тест" if result.test_type == "female" else "Мужской тест"
+
+    # Параллельное создание в Notion
+    notion_id = None
+    try:
+        async with httpx.AsyncClient(headers=_notion_headers(), timeout=15) as http:
+            # поищем существующего
+            existing = None
+            if result.telegram_username:
+                existing = await _notion_find_client(http, result.telegram_username)
+
+            context_lines = [
+                f"Источник: {source_label}",
+                f"Диагноз: {result.diagnosis}",
+                f"Свобода: {result.freedom_score}/40",
+                f"Сексуальность: {result.sexuality_score}/60",
+            ]
+            if result.utm_source:
+                context_lines.append(f"UTM: {result.utm_source}")
+            context = "\n".join(context_lines)
+
+            props = {
+                "Статус": {"status": {"name": "Выдать контент"}},
+                "Источник": {"select": {"name": source_label}},
+                "Контекст / Саммари": {"rich_text": [{"text": {"content": context[:2000]}}]},
+            }
+            if result.telegram_username:
+                props["Telegram Ник"] = {"rich_text": [{"text": {"content": result.telegram_username}}]}
+
+            if existing:
+                notion_id = existing["id"]
+                await http.patch(f"{NOTION_BASE}/pages/{notion_id}", json={"properties": props})
+            else:
+                name = result.name or result.telegram_username or "Аноним"
+                props["Имя"] = {"title": [{"text": {"content": name}}]}
+                resp = await http.post(f"{NOTION_BASE}/pages", json={
+                    "parent": {"database_id": NOTION_CLIENTS_DB_ID}, "properties": props,
+                })
+                resp.raise_for_status()
+                notion_id = resp.json()["id"]
+    except Exception as e:
+        logger.warning("Notion quiz submit failed (local only): %s", e)
+
+    # Пишем локально
+    conn = _get_db()
+
+    # Ищем существующего клиента по tg нику
+    client_id = None
+    if result.telegram_username:
+        row = conn.execute("SELECT id FROM clients WHERE telegram_nick = ?", (result.telegram_username,)).fetchone()
+        if row:
+            client_id = row["id"]
+
+    if not client_id:
+        cur = conn.execute(
+            "INSERT INTO clients (notion_page_id, name, telegram_nick, telegram_id, phone, status, source) "
+            "VALUES (?, ?, ?, ?, ?, 'Выдать контент', ?)",
+            (notion_id, result.name or result.telegram_username or "Аноним",
+             result.telegram_username or "", result.telegram_id or "", result.phone or "", source_label))
+        client_id = db.lastrowid
+
+    conn.execute(
+        "INSERT INTO test_results (client_id, telegram_id, name, phone, age, test_type, "
+        "freedom_score, sexuality_score, diagnosis, utm_source, answers) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (client_id, result.telegram_id or "", result.name or "", result.phone or "", result.age,
+         result.test_type, result.freedom_score, result.sexuality_score, result.diagnosis,
+         result.utm_source or "", json.dumps(result.answers or [])))
+
+    # Инкремент счётчика
+    conn.execute("UPDATE quiz_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'live_increment'")
+
+    conn.commit()
+    conn.close()
+
+    # Уведомление
+    await _notion_notify_quiz(result)
+
+    return {"ok": True, "client_id": client_id, "notion_page_id": notion_id}
+
+
+@app.get("/api/quiz/count")
+async def quiz_count():
+    conn = _get_db()
+    base = conn.execute("SELECT value FROM quiz_meta WHERE key = 'female_count'").fetchone()
+    live = conn.execute("SELECT value FROM quiz_meta WHERE key = 'live_increment'").fetchone()
+    conn.close()
+    total = int(base["value"]) + int(live["value"])
+    return {"count": total}
+
+
+@app.get("/api/quiz/results")
+async def quiz_results(test_type: str = Query("all"), limit: int = 200, offset: int = 0):
+    """Результаты тестов: test_type = female, mens, rpp, или all."""
+    conn = _get_db()
+    where = []
+    params = []
+    if test_type != "all":
+        where.append("test_type = ?")
+        params.append(test_type)
+    w = (" WHERE " + " AND ".join(where)) if where else ""
+    total = _scalar(conn.execute(f"SELECT COUNT(*) FROM test_results{w}", params).fetchone())
+    rows = conn.execute(
+        f"SELECT tr.*, c.name as client_name, c.telegram_nick as telegram_username FROM test_results tr LEFT JOIN clients c ON tr.client_id = c.id{w} ORDER BY tr.created_at DESC LIMIT ? OFFSET ?",
+        params + [limit, offset],
+    ).fetchall()
+    conn.close()
+    items = []
+    for r in rows:
+        item = _row(r)
+        # Для mens: name хранит @username, подставляем как telegram_username
+        if test_type == "mens":
+            if item.get("name", "").startswith("@"):
+                item["telegram_username"] = item["name"].lstrip("@")
+        if not item.get("telegram_username") and item.get("telegram_id"):
+            item["telegram_username"] = item["telegram_id"]
+        if isinstance(item.get("answers"), str):
+            try:
+                item["answers"] = json.loads(item["answers"])
+            except (json.JSONDecodeError, TypeError):
+                item["answers"] = {}
+        items.append(item)
+    return {"items": items, "total": total}
+
+
+@app.delete("/api/quiz/results/{result_id}")
+async def quiz_delete_result(result_id: int):
+    conn = _get_db()
+    conn.execute("DELETE FROM test_results WHERE id = ?", (result_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+class UpdateResultRequest(BaseModel):
+    name: str | None = None
+    telegram_username: str | None = None
+    phone: str | None = None
+    utm_source: str | None = None
+
+
+@app.patch("/api/quiz/results/{result_id}")
+async def quiz_patch_result(result_id: int, data: UpdateResultRequest):
+    conn = _get_db()
+    updates = []
+    params = []
+    for field in ("name", "telegram_username", "phone", "utm_source"):
+        val = getattr(data, field, None)
+        if val is not None:
+            if field == "telegram_username":
+                updates.append("name = ?")
+                params.append(f"@{val}" if not val.startswith("@") else val)
+            else:
+                updates.append(f"{field} = ?")
+                params.append(val)
+    if not updates:
+        conn.close()
+        return {"ok": False, "error": "no fields to update"}
+    params.append(result_id)
+    conn.execute(f"UPDATE test_results SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# Исторические оффсеты мужского теста (из старой CRM до миграции 10.05.2026)
+# Суммируются с динамическими данными из новой БД
+MEN_LEGACY_OFFSETS = {
+    "total": 623,       # всего записей в старой CRM
+    "opened": 607,      # открыли тест
+    "completed": 468,   # прошли
+    "booked": 25,       # записались
+    "video1": 260,      # просмотрели видео #1
+    "video2": 67,       # просмотрели видео #2
+    "purchase_intent": 8,
+    "call_intent": 17,
+}
+
+
+@app.get("/api/quiz/mens-stats")
+async def quiz_mens_stats():
+    """Статистика по мужскому тесту для дашборда."""
+    import json
+    conn = _get_db()
+
+    # Новые записи — те, что созданы после последней даты в дампе (10.05.2026)
+    new_total = _scalar(conn.execute(
+        "SELECT COUNT(*) FROM test_results WHERE test_type = 'mens' AND created_at > '2026-05-10'"
+    ).fetchone()) or 0
+    new_completed = _scalar(conn.execute(
+        "SELECT COUNT(*) FROM test_results WHERE test_type = 'mens' AND total_score > 0 AND created_at > '2026-05-10'"
+    ).fetchone()) or 0
+    new_booked = _scalar(conn.execute(
+        "SELECT COUNT(*) FROM test_results WHERE test_type = 'mens' AND COALESCE(phone, '') != '' AND created_at > '2026-05-10'"
+    ).fetchone()) or 0
+
+    avg_row = conn.execute(
+        "SELECT COALESCE(ROUND(AVG(COALESCE(total_score, 0))), 0) FROM test_results WHERE test_type = 'mens'"
+    ).fetchone()
+    avg_score = _scalar(avg_row) or 0
+
+    # Уровни
+    levels = conn.execute(
+        "SELECT COALESCE(NULLIF(diagnosis, ''), 'Не указан') AS level_name, COUNT(*) AS cnt "
+        "FROM test_results WHERE test_type = 'mens' GROUP BY diagnosis ORDER BY cnt DESC"
+    ).fetchall()
+    levels_list = [{"name": r["level_name"], "count": r["cnt"]} for r in levels]
+
+    # Разбивка по UTM
+    by_source = conn.execute(
+        "SELECT COALESCE(NULLIF(utm_source, ''), '—') AS source_name, COUNT(*) AS total "
+        "FROM test_results WHERE test_type = 'mens' GROUP BY utm_source ORDER BY total DESC"
+    ).fetchall()
+    sources_list = [{"source": r["source_name"], "total": r["total"], "completed": r["total"],
+                     "booked": 0, "purchase": 0, "call": 0, "conversion": 0} for r in by_source]
+
+    conn.close()
+
+    base = MEN_LEGACY_OFFSETS
+
+    total_all = base["total"] + new_total
+    opened_all = base["opened"] + new_total
+    completed_all = base["completed"] + new_completed
+    booked_all = base["booked"] + new_booked
+    video1_all = base["video1"]
+    video2_all = base["video2"]
+    purchase_all = base["purchase_intent"]
+    call_all = base["call_intent"]
+
+    opened_safe = max(opened_all, 1)
+    completed_safe = max(completed_all, 1)
+
+    return {
+        "total": total_all,
+        "opened": opened_all,
+        "completed": completed_all,
+        "avg_score": int(avg_score),
+        "levels": levels_list,
+        "video1": video1_all,
+        "video2": video2_all,
+        "video1_pct": round(video1_all / opened_safe * 100, 1),
+        "video2_pct": round(video2_all / opened_safe * 100, 1),
+        "purchase_intent": purchase_all,
+        "call_intent": call_all,
+        "expanded": 0,
+        "booked": booked_all,
+        "conversion_pct": round(booked_all / opened_safe * 100, 1),
+        "test_completion_pct": round(completed_all / opened_safe * 100, 1),
+        "purchase_pct": round(purchase_all / completed_safe * 100, 1),
+        "call_pct": round(call_all / completed_safe * 100, 1),
+        "by_source": sources_list,
+    }
+
+
+class MensEvent(BaseModel):
+    event: str
+    metadata: dict = {}
+
+
+@app.post("/api/quiz/mens-event")
+async def quiz_mens_event(data: MensEvent):
+    """Принимает события с мужского теста (просмотры видео и т.д.)."""
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    _execute("INSERT INTO quiz_events (event, metadata, created_at) VALUES (:event, :meta, :now)",
+             {"event": data.event, "meta": json.dumps(data.metadata), "now": now})
+    return {"ok": True}
+
+
+@app.get("/api/quiz/events")
+async def quiz_events(event_filter: Optional[str] = Query(None)):
+    """Возвращает события quiz_events. Фильтр: event=CTA_QUICKSTART_CLICKED,CTA_ZHP_CLICKED"""
+    db = _get_db()
+    try:
+        if event_filter:
+            events_list = [e.strip() for e in event_filter.split(",")]
+            placeholders = ", ".join("?" for _ in events_list)
+            rows = db.execute(
+                f"SELECT * FROM quiz_events WHERE event IN ({placeholders}) ORDER BY created_at DESC",
+                events_list
+            ).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM quiz_events ORDER BY created_at DESC").fetchall()
+    finally:
+        db.close()
+    return {"items": [dict(r) for r in rows], "total": len(rows)}
+
+
+@app.post("/api/quiz/send-pdf")
+async def send_pdf(req: SendPdfRequest):
+    if not QUIZ_BOT_TOKEN:
+        return {"ok": False, "error": "QUIZ_BOT_TOKEN not configured"}
+
+    try:
+        pdf_bytes = base64.b64decode(req.pdf_base64)
+    except Exception:
+        return {"ok": False, "error": "invalid base64"}
+
+    url = f"https://api.telegram.org/bot{QUIZ_BOT_TOKEN}/sendDocument"
+    async with httpx.AsyncClient(timeout=30) as tg:
+        resp = await tg.post(
+            url,
+            data={"chat_id": req.telegram_id, "caption": "Твои результаты диагностики 🌸"},
+            files={"document": ("diagnostics.pdf", pdf_bytes, "application/pdf")},
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            return {"ok": False, "error": data.get("description", "telegram_error")}
+    return {"ok": True}
+
+
+# ─── API: Deals ────────────────────────────────────────────────────────────────
+
+class DealCreate(BaseModel):
+    title: str
+    client_id: int | None = None
+    client_name: str = ""
+    status: str = "Ожидает"
+    amount: float = 0
+    paid: float = 0
+    purchase_date: str = ""
+
+
+@app.get("/api/deals")
+async def list_deals(
+    status: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    amount_min: Optional[float] = Query(None),
+    amount_max: Optional[float] = Query(None),
+    limit: int = Query(100),
+    offset: int = Query(0),
+):
+    conn = _get_db()
+    where = []
+    params = []
+    if status:
+        where.append("d.status = ?")
+        params.append(status)
+    if date_from:
+        where.append("d.purchase_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("d.purchase_date <= ?")
+        params.append(date_to)
+    if amount_min is not None:
+        where.append("d.amount >= ?")
+        params.append(amount_min)
+    if amount_max is not None:
+        where.append("d.amount <= ?")
+        params.append(amount_max)
+    where_clause = (" WHERE " + " AND ".join(where)) if where else ""
+
+    total = _scalar(conn.execute(f"SELECT COUNT(*) FROM deals d{where_clause}", params).fetchone())
+    rows = conn.execute(
+        f"SELECT d.*, c.name as client_name, c.telegram_nick FROM deals d LEFT JOIN clients c ON d.client_id = c.id{where_clause} "
+        "ORDER BY d.created_at DESC LIMIT ? OFFSET ?",
+        params + [limit, offset],
+    ).fetchall()
+    conn.close()
+    return {"deals": [_row(r) for r in rows], "total": total}
+
+
+class DealPatch(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+    amount: Optional[float] = None
+    paid: Optional[float] = None
+    purchase_date: Optional[str] = None
+
+@app.patch("/api/deals/{deal_id}")
+async def patch_deal(deal_id: int, data: DealPatch):
+    conn = _get_db()
+    row = conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Deal not found")
+    updates = []
+    params = []
+    if data.title is not None:
+        updates.append("title = ?")
+        params.append(data.title)
+    if data.status is not None:
+        updates.append("status = ?")
+        params.append(data.status)
+    if data.amount is not None:
+        updates.append("amount = ?")
+        params.append(data.amount)
+    if data.paid is not None:
+        updates.append("paid = ?")
+        params.append(data.paid)
+    if data.purchase_date is not None:
+        updates.append("purchase_date = ?")
+        params.append(data.purchase_date)
+    if not updates:
+        conn.close()
+        return {"ok": True}
+    updates.append("updated_at = datetime('now')")
+    params.append(deal_id)
+    conn.execute(f"UPDATE deals SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/deals")
+async def create_deal(data: DealCreate | None = None):
+    """Создать сделку в локальной БД + Notion."""
+    if data is None:
+        data = DealCreate()
+
+    notion_id = None
+    client_name = data.client_name or ""
+    if data.client_id:
+        conn = _get_db()
+        row = conn.execute("SELECT name FROM clients WHERE id = ?", (data.client_id,)).fetchone()
+        conn.close()
+        if row:
+            client_name = row["name"]
+
+    title = f"{data.title} — {client_name}" if client_name else data.title
+
+    async def _notion_create_deal():
+        nonlocal notion_id
+        props = {
+            "Сделка": {"title": [{"text": {"content": title}}]},
+            "Статус": {"status": {"name": data.status or "Ожидает"}},
+        }
+        if data.amount:
+            props["Сумма"] = {"number": data.amount}
+        if data.paid:
+            props["Оплачено"] = {"number": data.paid}
+        if data.purchase_date:
+            props["Дата покупки"] = {"date": {"start": data.purchase_date}}
+        async with httpx.AsyncClient(headers=_notion_headers(), timeout=15) as http:
+            resp = await http.post(f"{NOTION_BASE}/pages", json={
+                "parent": {"database_id": NOTION_DEALS_DB_ID}, "properties": props,
+            })
+            notion_id = resp.json()["id"]
+
+    try:
+        await _notion_create_deal()
+    except Exception as e:
+        logger.warning("Notion deal create failed (local only): %s", e)
+
+    conn = _get_db()
+    cur = conn.execute(
+        "INSERT INTO deals (notion_page_id, client_id, title, status, amount, paid, purchase_date) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (notion_id, data.client_id, title, data.status or "Ожидает", data.amount or 0, data.paid or 0, data.purchase_date or ""))
+    deal_id = conn.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": deal_id}
+
+
+# ─── Mira Tools ────────────────────────────────────────────────────────────────
+
+class MiraChatRequest(BaseModel):
+    prompt: str
+    context_type: str = "global"
+    client_id: int | None = None
+    context_data: dict = {}
+
+MIRA_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_task",
+            "description": "Создаёт задачу для контакта. Используй когда нужно создать напоминание, фоллоу-ап, проверку оплаты и т.д.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "integer", "description": "ID контакта в CRM"},
+                    "title": {"type": "string", "description": "Название задачи"},
+                    "task_type": {"type": "string", "enum": ["follow_up", "payment", "schedule", "content", "feedback"], "description": "Тип задачи"},
+                    "due_date": {"type": "string", "description": "Дата выполнения (YYYY-MM-DD), если не указана — сегодня"},
+                },
+                "required": ["client_id", "title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_deal_status",
+            "description": "Обновляет статус сделки. Используй когда клиент говорит об оплате или изменении договорённостей.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "deal_id": {"type": "integer", "description": "ID сделки"},
+                    "status": {"type": "string", "enum": ["Ожидает", "В процессе", "Оплачено", "Возврат"], "description": "Новый статус"},
+                },
+                "required": ["deal_id", "status"],
+            },
+        },
+    },
+]
+
+
+async def _execute_tool(tool_call: dict) -> str:
+    """Выполняет вызов инструмента от Миры. Возвращает строку-результат для role: tool."""
+    func = tool_call.get("function", {})
+    name = func.get("name", "")
+    args = json.loads(func.get("arguments", "{}"))
+
+    if name == "create_task":
+        client_id = args.get("client_id")
+        title = args.get("title")
+        task_type = args.get("task_type", "follow_up")
+        due_date = args.get("due_date", "")
+        if not client_id or not title:
+            return json.dumps({"error": "client_id and title required"})
+        conn = _get_db()
+        conn.execute(
+            "INSERT INTO tasks (client_id, title, type, due_date, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+            (client_id, title, task_type, due_date),
+        )
+        new_id = conn.lastrowid
+        conn.commit()
+        conn.close()
+        return json.dumps({"ok": True, "task_id": new_id, "title": title})
+
+    if name == "update_deal_status":
+        deal_id = args.get("deal_id")
+        status = args.get("status")
+        if not deal_id or not status:
+            return json.dumps({"error": "deal_id and status required"})
+        conn = _get_db()
+        conn.execute("UPDATE deals SET status = ?, updated_at = datetime('now') WHERE id = ?", (status, deal_id))
+        conn.commit()
+        conn.close()
+        return json.dumps({"ok": True, "deal_id": deal_id, "status": status})
+
+    return json.dumps({"error": f"Unknown tool: {name}"})
+
+
+async def _call_mira(prompt: str, context_str: str = "", prev_messages: list = None, tools_enabled: bool = False) -> dict:
+    """Вызов Миры через LiteLLM с поддержкой tool_calls."""
+    messages = [{"role": "system", "content": "Ты — Мира, AI-ассистент CRM Personal OS. Отвечай кратко, по-русски. Ты можешь создавать задачи и обновлять статусы сделок." + (f"\n\nКонтекст:\n{context_str}" if context_str else "")}]
+    if prev_messages:
+        messages.extend(prev_messages)
+    messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": MIRA_MODEL,
+        "messages": messages,
+        "max_tokens": 2048,
+    }
+    if tools_enabled:
+        payload["tools"] = MIRA_TOOLS
+        payload["tool_choice"] = "auto"
+
+    async with httpx.AsyncClient(timeout=30) as http:
+        resp = await http.post(LITELLM_URL, json=payload)
+        return resp.json()
+
+
+@app.post("/api/mira/chat")
+async def mira_chat(data: MiraChatRequest):
+    """Мост к Мире с поддержкой tool_calls."""
+    context_str = ""
+    if data.context_type == "local" and data.context_data.get("timeline"):
+        msgs = data.context_data["timeline"]
+        context_str = "\n".join(f"[{m.get('sender','?')}] {m.get('text','')}" for m in msgs[-10:])
+
+    try:
+        body = await _call_mira(data.prompt, context_str=context_str, tools_enabled=True)
+        choice = body.get("choices", [{}])[0]
+        msg = choice.get("message", {})
+
+        # Handle tool_calls
+        if msg.get("tool_calls"):
+            tool_results = []
+            for tc in msg["tool_calls"]:
+                result = await _execute_tool(tc)
+                tool_results.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
+                logger.info("Mira executed tool: %s → %s", tc.get("function", {}).get("name"), result[:80])
+
+            # Send tool results back to Mira for final answer
+            messages = [
+                {"role": "system", "content": "Ты — Мира, AI-ассистент CRM."},
+            ]
+            messages.append(msg)  # assistant message with tool_calls
+            messages.extend(tool_results)
+            messages.append({"role": "user", "content": "Опиши результат пользователю кратко, по-русски."})
+
+            final = await _call_mira("Опиши результат", prev_messages=messages[:-1], tools_enabled=False)
+            reply = final.get("choices", [{}])[0].get("message", {}).get("content", "") or "Готово."
+            return {"response": reply}
+
+        reply = msg.get("content", "") or "Нет ответа"
+        return {"response": reply}
+
+    except httpx.ConnectError:
+        return {"response": f"✨ Мира настраивается. Запрос: «{data.prompt[:50]}»"}
+    except Exception as e:
+        logger.error("Mira error: %s", e, exc_info=True)
+        return {"response": f"Ошибка: {e}"}
+
+
+@app.post("/api/mira/chat/session")
+async def mira_new_session():
+    """Создать новую сессию чата с Мирой."""
+    conn = _get_db()
+    cur = conn.execute("INSERT INTO mira_sessions (title) VALUES ('Новый чат')")
+    sid = db.lastrowid
+    conn.commit()
+    conn.close()
+    return {"session_id": sid}
+
+
+@app.get("/api/mira/sessions")
+async def mira_list_sessions():
+    conn = _get_db()
+    rows = conn.execute("SELECT * FROM mira_sessions ORDER BY updated_at DESC LIMIT 50").fetchall()
+    conn.close()
+    return {"sessions": [_row(r) for r in rows]}
+
+
+@app.get("/api/mira/sessions/{session_id}/messages")
+async def mira_get_messages(session_id: int):
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM mira_messages WHERE session_id = ? ORDER BY created_at ASC",
+        (session_id,),
+    ).fetchall()
+    conn.close()
+    return {"messages": [_row(r) for r in rows]}
+
+
+def _save_mira_messages(session_id: int, messages: list) -> None:
+    """Сохраняет пачку сообщений (user+assistant+tool) в БД сессии."""
+    conn = _get_db()
+    for m in messages:
+        role = m.get("role", "")
+        content = m.get("content", "")
+        if role in ("user", "assistant") and content:
+            conn.execute(
+                "INSERT INTO mira_messages (session_id, role, content) VALUES (?, ?, ?)",
+                (session_id, role, content),
+            )
+        elif role == "tool" and content:
+            conn.execute(
+                "INSERT INTO mira_messages (session_id, role, content) VALUES (?, 'assistant', ?)",
+                (session_id, f"[tool] {content[:500]}"),
+            )
+    conn.execute("UPDATE mira_sessions SET updated_at = datetime('now') WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
+async def _auto_rename_session(session_id: int, first_prompt: str) -> None:
+    """Генерирует название сессии через AI."""
+    try:
+        payload = {
+            "model": MIRA_MODEL,
+            "messages": [
+                {"role": "system", "content": "Сгенерируй короткое название (2-4 слова) для этого диалога. Только название, без кавычек."},
+                {"role": "user", "content": f"Первое сообщение: {first_prompt[:200]}"},
+            ],
+            "max_tokens": 30,
+        }
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(LITELLM_URL, json=payload)
+            title = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip().strip('"\'')
+            if title and len(title) < 100:
+                c = _get_db()
+                c.execute("UPDATE mira_sessions SET title = ? WHERE id = ?", (title, session_id))
+                c.commit()
+                c.close()
+    except Exception:
+        pass
+
+
+@app.post("/api/mira/chat/{session_id}")
+async def mira_chat_session(session_id: int, data: MiraChatRequest):
+    """Чат с Мирой в рамках сессии с tool_calls."""
+    # Save user message
+    _save_mira_messages(session_id, [{"role": "user", "content": data.prompt}])
+
+    # Auto-rename session on first message
+    try:
+        c = _get_db()
+        count = _scalar(c.execute("SELECT COUNT(*) FROM mira_messages WHERE session_id = ? AND role = 'user'", (session_id,)).fetchone())
+        c.close()
+        if count == 1:
+            asyncio.create_task(_auto_rename_session(session_id, data.prompt))
+    except Exception:
+        pass
+
+    # Load last 20 messages for context
+    conn = _get_db()
+    prev = conn.execute(
+        "SELECT role, content FROM mira_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 20",
+        (session_id,),
+    ).fetchall()
+    prev.reverse()
+    conn.close()
+
+    context_str = data.context_data.get("timeline", "") if data.context_data else ""
+
+    reply = "Нет ответа"
+    try:
+        body = await _call_mira(data.prompt, context_str=context_str, prev_messages=[
+            {"role": p["role"], "content": p["content"]} for p in prev if p["role"] != "tool"
+        ], tools_enabled=True)
+        choice = body.get("choices", [{}])[0]
+        msg = choice.get("message", {})
+
+        saved = [msg]
+
+        if msg.get("tool_calls"):
+            tool_results = []
+            for tc in msg["tool_calls"]:
+                result = await _execute_tool(tc)
+                tool_results.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
+                logger.info("Mira tool: %s → %s", tc.get("function", {}).get("name"), result[:80])
+
+            saved.extend(tool_results)
+
+            # Send tool results back for final answer
+            final_messages = [
+                {"role": "system", "content": "Ты — Мира, AI-ассистент CRM."},
+                msg,
+            ]
+            final_messages.extend(tool_results)
+            final_messages.append({"role": "user", "content": "Опиши результат пользователю кратко, по-русски."})
+
+            final = await _call_mira("Опиши результат", prev_messages=final_messages[:-1], tools_enabled=False)
+            final_reply = final.get("choices", [{}])[0].get("message", {}).get("content", "") or "Готово."
+            reply = final_reply
+            saved.append({"role": "assistant", "content": final_reply})
+        else:
+            reply = msg.get("content", "") or "Нет ответа"
+            saved.append({"role": "assistant", "content": reply})
+
+        _save_mira_messages(session_id, saved)
+
+    except httpx.ConnectError:
+        reply = f"✨ Мира настраивается. Запрос: «{data.prompt[:50]}»"
+    except Exception as e:
+        logger.error("Mira session error: %s", e, exc_info=True)
+        reply = f"Ошибка: {e}"
+
+    return {"response": reply, "session_id": session_id}
+
+
+@app.delete("/api/mira/sessions/{session_id}")
+async def mira_delete_session(session_id: int):
+    conn = _get_db()
+    conn.execute("DELETE FROM mira_messages WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM mira_sessions WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ─── API: Stats ────────────────────────────────────────────────────────────────
+
+@app.get("/api/stats")
+async def stats():
+    """Статистика воронки."""
+    conn = _get_db()
+    total = _scalar(conn.execute("SELECT COUNT(*) FROM clients").fetchone())
+    by_status = conn.execute(
+        "SELECT status, COUNT(*) as cnt FROM clients GROUP BY status ORDER BY cnt DESC"
+    ).fetchall()
+    total_deals = _scalar(conn.execute("SELECT COUNT(*) FROM deals").fetchone())
+    deals_sum = _scalar(conn.execute("SELECT COALESCE(SUM(amount), 0) FROM deals").fetchone())
+    conn.close()
+    return {
+        "total_clients": total,
+        "by_status": [{"status": r["status"], "count": r["cnt"]} for r in by_status],
+        "total_deals": total_deals,
+        "deals_sum": deals_sum,
+    }
+
+
+# ─── API: Поиск по воронке ────────────────────────────────────────────────────
+
+class FunnelSearchResult(BaseModel):
+    items: list
+    total: int
+    query: str
+
+@app.get("/api/funnel/search")
+async def funnel_search(
+    q: str = Query(..., min_length=2),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Поиск по всей воронке: клиенты, сделки, тесты, заметки.
+    Ищет по name, telegram_nick, telegram_id, phone, status, source, summary,
+    а также по title сделок, diagnosis тестов и text заметок.
+    """
+    conn = _get_db()
+    pattern = f"%{q}%"
+
+    where_clauses = [
+        "c.name LIKE ?",
+        "c.telegram_nick LIKE ?",
+        "c.telegram_id LIKE ?",
+        "c.phone LIKE ?",
+        "c.status LIKE ?",
+        "c.source LIKE ?",
+        "c.summary LIKE ?",
+        "d.title LIKE ?",
+        "tr.diagnosis LIKE ?",
+        "n.text LIKE ?",
+    ]
+    where_sql = " OR ".join(where_clauses)
+    params = [pattern] * 10
+
+    # Total distinct clients matching
+    total = _scalar(
+        conn.execute(
+            f"SELECT COUNT(DISTINCT c.id) FROM clients c "
+            f"LEFT JOIN deals d ON d.client_id = c.id "
+            f"LEFT JOIN test_results tr ON tr.client_id = c.id "
+            f"LEFT JOIN notes n ON n.client_id = c.id "
+            f"WHERE ({where_sql})",
+            params,
+        ).fetchone()
+    )
+
+    # Results with funnel context
+    rows = conn.execute(
+        f"SELECT DISTINCT c.id, c.name, c.telegram_nick, c.telegram_id, "
+        f"c.phone, c.status, c.source, c.summary, c.last_contact, c.created_at, "
+        f"(SELECT COUNT(*) FROM deals d2 WHERE d2.client_id = c.id) AS deal_count, "
+        f"(SELECT COALESCE(SUM(d2.amount), 0) FROM deals d2 WHERE d2.client_id = c.id) AS deal_total_amount, "
+        f"(SELECT d2.title FROM deals d2 WHERE d2.client_id = c.id ORDER BY d2.created_at DESC LIMIT 1) AS last_deal_title, "
+        f"(SELECT tr2.test_type FROM test_results tr2 WHERE tr2.client_id = c.id ORDER BY tr2.created_at DESC LIMIT 1) AS last_test_type, "
+        f"(SELECT tr2.diagnosis FROM test_results tr2 WHERE tr2.client_id = c.id ORDER BY tr2.created_at DESC LIMIT 1) AS last_test_diagnosis, "
+        f"(SELECT tr2.total_score FROM test_results tr2 WHERE tr2.client_id = c.id ORDER BY tr2.created_at DESC LIMIT 1) AS last_test_total_score, "
+        f"(SELECT COUNT(*) FROM notes n2 WHERE n2.client_id = c.id) AS notes_count, "
+        f"(SELECT COUNT(*) FROM tasks t WHERE t.client_id = c.id AND t.status = 'pending') AS tasks_pending "
+        f"FROM clients c "
+        f"LEFT JOIN deals d ON d.client_id = c.id "
+        f"LEFT JOIN test_results tr ON tr.client_id = c.id "
+        f"LEFT JOIN notes n ON n.client_id = c.id "
+        f"WHERE ({where_sql}) "
+        f"ORDER BY c.id DESC LIMIT ? OFFSET ?",
+        params + [limit, offset],
+    ).fetchall()
+
+    conn.close()
+
+    if USE_PG:
+        # rollback any aborted transaction from potential failed queries
+        pass
+
+    seen = set()
+    items = []
+    for r in rows:
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        test_type = r.get("last_test_type")
+        items.append(
+            {
+                "client": {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "telegram_nick": r["telegram_nick"],
+                    "telegram_id": r["telegram_id"],
+                    "phone": r["phone"],
+                    "status": r["status"],
+                    "source": r["source"],
+                    "summary": r["summary"],
+                    "created_at": r["created_at"],
+                },
+                "funnel_stage": r["status"],
+                "deal_summary": (
+                    {
+                        "total": r["deal_count"],
+                        "total_amount": r["deal_total_amount"],
+                        "last_deal": r["last_deal_title"] or "",
+                    }
+                    if r["deal_count"] > 0
+                    else None
+                ),
+                "latest_test": (
+                    {
+                        "test_type": test_type,
+                        "diagnosis": r["last_test_diagnosis"],
+                        "score": r["last_test_total_score"],
+                    }
+                    if test_type
+                    else None
+                ),
+                "notes_count": r["notes_count"],
+                "tasks_pending": r["tasks_pending"],
+                "last_contact": r.get("last_contact"),
+            }
+        )
+
+    return {"items": items, "total": total, "query": q}
+
+
+# ─── Health ────────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8002, reload=True)

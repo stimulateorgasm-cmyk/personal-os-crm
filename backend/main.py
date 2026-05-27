@@ -2844,14 +2844,14 @@ MIRA_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "create_task",
-            "description": "Создаёт задачу для контакта. Используй когда нужно создать напоминание, фоллоу-ап, проверку оплаты и т.д.",
+            "name": "create_client_task",
+            "description": "Создаёт задачу для контакта в CRM. Используй когда нужно создать напоминание, фоллоу-ап, проверку оплаты и т.д.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "client_id": {"type": "integer", "description": "ID контакта в CRM"},
                     "title": {"type": "string", "description": "Название задачи"},
-                    "task_type": {"type": "string", "enum": ["follow_up", "payment", "schedule", "content", "feedback"], "description": "Тип задачи"},
+                    "task_type": {"type": "string", "enum": ["follow_up", "session", "payment", "contract", "schedule", "content", "feedback"], "description": "Тип задачи"},
                     "due_date": {"type": "string", "description": "Дата выполнения (YYYY-MM-DD), если не указана — сегодня"},
                 },
                 "required": ["client_id", "title"],
@@ -2873,6 +2873,142 @@ MIRA_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_anton_task",
+            "description": "Создаёт задачу Антона (личную задачу). Статусы: Идеи, Очередь, 15 задач на неделю, Делаю сейчас, Рефлексия, Готово. Используй когда Антон просит что-то записать в его задачи.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Название задачи"},
+                    "status": {"type": "string", "enum": ["Идеи", "Очередь", "15 задач на неделю", "Делаю сейчас", "Рефлексия", "Готово"], "description": "Статус (колонка)"},
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_anton_tasks",
+            "description": "Показывает список задач Антона. Можно отфильтровать по статусу.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["Идеи", "Очередь", "15 задач на неделю", "Делаю сейчас", "Рефлексия", "Готово"], "description": "Статус для фильтрации"},
+                    "archived": {"type": "boolean", "description": "Показать архивные"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "patch_anton_task",
+            "description": "Обновляет задачу Антона: перенести в другой статус, изменить название, описание.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "description": "ID задачи Антона"},
+                    "status": {"type": "string", "enum": ["Идеи", "Очередь", "15 задач на неделю", "Делаю сейчас", "Рефлексия", "Готово"], "description": "Новый статус"},
+                    "title": {"type": "string", "description": "Новое название"},
+                    "description": {"type": "string", "description": "Новое описание"},
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_clients",
+            "description": "Ищет клиентов в CRM по имени, никнейму или телефону. Используй когда нужно найти контакт.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Поисковый запрос (имя, @ник, телефон)"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_client_info",
+            "description": "Показывает подробную информацию о клиенте: контакты, заметки, задачи. Используй когда нужно узнать контекст перед ответом.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "integer", "description": "ID клиента в CRM"},
+                },
+                "required": ["client_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_note",
+            "description": "Создаёт заметку в карточке клиента. Используй когда нужно записать результат разговора, наблюдение или договорённость.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "integer", "description": "ID клиента в CRM"},
+                    "text": {"type": "string", "description": "Текст заметки"},
+                },
+                "required": ["client_id", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "patch_client_status",
+            "description": "Изменяет статус (этап воронки) клиента. Статусы: Контакт, Выдать контент, Квалифицировать, Довести до решения, Проработать, Работа завершена (Архив). Используй когда клиент перешёл на следующий этап.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "integer", "description": "ID клиента в CRM"},
+                    "status": {"type": "string", "description": "Новый статус клиента"},
+                },
+                "required": ["client_id", "status"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_deal",
+            "description": "Создаёт сделку для клиента. Используй когда клиент согласился на покупку, выбрал тариф, оплатил.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "integer", "description": "ID клиента в CRM"},
+                    "title": {"type": "string", "description": "Название сделки (например, тариф или услуга)"},
+                    "amount": {"type": "number", "description": "Сумма сделки в рублях"},
+                    "status": {"type": "string", "enum": ["Ожидает", "В процессе", "Оплачено", "Возврат"], "description": "Статус сделки"},
+                },
+                "required": ["client_id", "title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_timeline",
+            "description": "Показывает последние сообщения из переписки с клиентом (по умолчанию 20 последних). Используй когда нужно вспомнить о чём говорили, проверить историю общения.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "integer", "description": "ID клиента в CRM"},
+                    "limit": {"type": "integer", "description": "Сколько сообщений показать (по умолчанию 20)"},
+                },
+                "required": ["client_id"],
+            },
+        },
+    },
 ]
 
 
@@ -2882,7 +3018,7 @@ async def _execute_tool(tool_call: dict) -> str:
     name = func.get("name", "")
     args = json.loads(func.get("arguments", "{}"))
 
-    if name == "create_task":
+    if name == "create_client_task":
         client_id = args.get("client_id")
         title = args.get("title")
         task_type = args.get("task_type", "follow_up")
@@ -2897,7 +3033,7 @@ async def _execute_tool(tool_call: dict) -> str:
         new_id = conn.lastrowid
         conn.commit()
         conn.close()
-        return json.dumps({"ok": True, "task_id": new_id, "title": title})
+        return json.dumps({"ok": True, "task_id": new_id, "title": title, "client_id": client_id})
 
     if name == "update_deal_status":
         deal_id = args.get("deal_id")
@@ -2910,12 +3046,160 @@ async def _execute_tool(tool_call: dict) -> str:
         conn.close()
         return json.dumps({"ok": True, "deal_id": deal_id, "status": status})
 
+    if name == "create_anton_task":
+        title = args.get("title")
+        status = args.get("status", "Идеи")
+        if not title:
+            return json.dumps({"error": "title required"})
+        conn = _get_db()
+        conn.execute(
+            "INSERT INTO antons_tasks (title, status, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))",
+            (title, status),
+        )
+        new_id = conn.lastrowid
+        conn.commit()
+        conn.close()
+        return json.dumps({"ok": True, "task_id": new_id, "title": title, "status": status})
+
+    if name == "list_anton_tasks":
+        status = args.get("status")
+        archived = args.get("archived", False)
+        conn = _get_db()
+        where = "WHERE (at.is_archived IS NULL OR at.is_archived = 0)" if not archived else "WHERE at.is_archived = 1"
+        params = []
+        if status:
+            where += " AND at.status = ?"
+            params.append(status)
+        rows = conn.execute(
+            f"SELECT at.id, at.title, at.status, at.order_index, (SELECT COUNT(*) FROM antons_task_comments WHERE task_id = at.id) as comments_count "
+            f"FROM antons_tasks at {where} ORDER BY at.status, at.order_index",
+            params,
+        ).fetchall()
+        conn.close()
+        tasks = [_row(r) for r in rows]
+        return json.dumps({"ok": True, "tasks": tasks, "count": len(tasks)})
+
+    if name == "patch_anton_task":
+        task_id = args.get("task_id")
+        if not task_id:
+            return json.dumps({"error": "task_id required"})
+        conn = _get_db()
+        updates = []
+        params = []
+        for field in ("status", "title", "description"):
+            val = args.get(field)
+            if val is not None:
+                updates.append(f"{'status' if field == 'status' else field} = ?")
+                params.append(val)
+        if not updates:
+            conn.close()
+            return json.dumps({"ok": True, "no_changes": True})
+        updates.append("updated_at = datetime('now')")
+        params.append(task_id)
+        conn.execute(f"UPDATE antons_tasks SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+        conn.close()
+        return json.dumps({"ok": True, "task_id": task_id})
+
+    if name == "search_clients":
+        query = args.get("query", "")
+        if not query:
+            return json.dumps({"error": "query required"})
+        pattern = f"%{query}%"
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT id, name, telegram_nick, phone, status, source FROM clients WHERE name LIKE ? OR telegram_nick LIKE ? OR phone LIKE ? ORDER BY last_contact DESC NULLS LAST LIMIT 10",
+            (pattern, pattern, pattern),
+        ).fetchall()
+        conn.close()
+        clients = [_row(r) for r in rows]
+        return json.dumps({"ok": True, "clients": clients, "count": len(clients)})
+
+    if name == "get_client_info":
+        client_id = args.get("client_id")
+        if not client_id:
+            return json.dumps({"error": "client_id required"})
+        conn = _get_db()
+        row = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+        if not row:
+            conn.close()
+            return json.dumps({"error": "Client not found"})
+        client = dict(row)
+        notes = conn.execute("SELECT id, text, created_at FROM notes WHERE client_id = ? ORDER BY created_at DESC LIMIT 5", (client_id,)).fetchall()
+        client["recent_notes"] = [dict(n) for n in notes]
+        tasks = conn.execute("SELECT id, title, type, status, due_date FROM tasks WHERE client_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 10", (client_id,)).fetchall()
+        client["pending_tasks"] = [dict(t) for t in tasks]
+        deals = conn.execute("SELECT id, title, status, amount FROM deals WHERE client_id = ? ORDER BY created_at DESC LIMIT 5", (client_id,)).fetchall()
+        client["deals"] = [dict(d) for d in deals]
+        conn.close()
+        return json.dumps({"ok": True, "client": client})
+
+    if name == "create_note":
+        client_id = args.get("client_id")
+        text = args.get("text", "").strip()
+        if not client_id or not text:
+            return json.dumps({"error": "client_id and text required"})
+        conn = _get_db()
+        conn.execute(
+            "INSERT INTO notes (client_id, text, created_at) VALUES (?, ?, datetime('now'))",
+            (client_id, text),
+        )
+        new_id = conn.lastrowid
+        conn.commit()
+        conn.close()
+        return json.dumps({"ok": True, "note_id": new_id, "client_id": client_id})
+
+    if name == "patch_client_status":
+        client_id = args.get("client_id")
+        status = args.get("status")
+        if not client_id or not status:
+            return json.dumps({"error": "client_id and status required"})
+        conn = _get_db()
+        conn.execute(
+            "UPDATE clients SET status = ?, updated_at = datetime('now') WHERE id = ?",
+            (status, client_id),
+        )
+        conn.commit()
+        conn.close()
+        return json.dumps({"ok": True, "client_id": client_id, "status": status})
+
+    if name == "create_deal":
+        client_id = args.get("client_id")
+        title = args.get("title")
+        amount = args.get("amount", 0)
+        deal_status = args.get("status", "Ожидает")
+        if not client_id or not title:
+            return json.dumps({"error": "client_id and title required"})
+        conn = _get_db()
+        conn.execute(
+            "INSERT INTO deals (client_id, title, amount, status, created_at, updated_at) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+            (client_id, title, amount, deal_status),
+        )
+        new_id = conn.lastrowid
+        conn.commit()
+        conn.close()
+        return json.dumps({"ok": True, "deal_id": new_id, "title": title, "amount": amount})
+
+    if name == "get_timeline":
+        client_id = args.get("client_id")
+        limit = args.get("limit", 20)
+        if not client_id:
+            return json.dumps({"error": "client_id required"})
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT sender_type as sender, text, created_at FROM telegram_messages WHERE client_id = ? ORDER BY created_at DESC LIMIT ?",
+            (client_id, limit),
+        ).fetchall()
+        conn.close()
+        messages = [dict(r) for r in reversed(rows)]
+        return json.dumps({"ok": True, "messages": messages, "count": len(messages)})
+
     return json.dumps({"error": f"Unknown tool: {name}"})
 
 
 async def _call_mira(prompt: str, context_str: str = "", prev_messages: list = None, tools_enabled: bool = False) -> dict:
     """Вызов Миры через LiteLLM с поддержкой tool_calls."""
-    messages = [{"role": "system", "content": "Ты — Мира, AI-ассистент CRM Personal OS. Отвечай кратко, по-русски. Ты можешь создавать задачи и обновлять статусы сделок." + (f"\n\nКонтекст:\n{context_str}" if context_str else "")}]
+    messages = [{"role": "system", "content": "Ты — Мира, AI-ассистент CRM Personal OS. Отвечай кратко, по-русски. Используй инструменты когда нужно выполнить действие.\n\nТвои возможности:\n\n📋 ЗАДАЧИ АНТОНА — create_anton_task (создать), list_anton_tasks (список), patch_anton_task (изменить/перенести)\nСтатусы: Идеи, Очередь, 15 задач на неделю, Делаю сейчас, Рефлексия, Готово\n\n👤 КЛИЕНТЫ CRM — search_clients (поиск), get_client_info (карточка)\n📝 create_note — записать заметку в карточку клиента\n🔄 patch_client_status — перевести клиента на другой этап воронки\n📊 create_deal — создать сделку (когда клиент выбрал тариф)\n💬 get_timeline — показать историю переписки с клиентом\n📌 create_client_task — создать задачу для клиента (типы: follow_up — фоллоу-ап, session — сессия, payment — оплата, contract — договор, schedule — запись, content — контент, feedback — обратная связь)\n\n💰 СДЕЛКИ — update_deal_status (изменить статус)\nСтатусы: Ожидает, В процессе, Оплачено, Возврат\n\nВАЖНО: Когда пользователь просит что-то сделать — сначала найди клиента (search_clients), посмотри карточку (get_client_info), а потом действуй." + (f"\n\nКонтекст:\n{context_str}" if context_str else "")}]
     if prev_messages:
         messages.extend(prev_messages)
     messages.append({"role": "user", "content": prompt})
@@ -3451,6 +3735,459 @@ async def import_notion_comments():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ─── Mira API ──────────────────────────────────────────────────────────────────
+# Внутренние эндпоинты для Миры — без авторизации (Мира = встроенный ассистент)
+
+# ─── Mira API: Задачи Антона ───────────────────────────────────────────────────
+
+@app.get("/api/mira/antons-tasks")
+async def mira_list_antons_tasks(archived: Optional[bool] = Query(False), status: Optional[str] = Query(None)):
+    conn = _get_db()
+    where = "WHERE (at.is_archived IS NULL OR at.is_archived = 0)" if not archived else "WHERE at.is_archived = 1"
+    params = []
+    if status:
+        where += " AND at.status = ?"
+        params.append(status)
+    rows = conn.execute(
+        f"SELECT at.*, (SELECT COUNT(*) FROM antons_task_comments WHERE task_id = at.id) as comments_count "
+        f"FROM antons_tasks at {where} ORDER BY at.status, at.order_index, at.created_at DESC",
+        params,
+    ).fetchall()
+    conn.close()
+    return {"ok": True, "tasks": [_row(r) for r in rows]}
+
+@app.post("/api/mira/antons-tasks")
+async def mira_create_anton_task(data: AntonTaskCreate):
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO antons_tasks (title, status, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))",
+        (data.title, data.status),
+    )
+    new_id = conn.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": new_id}
+
+@app.patch("/api/mira/antons-tasks/{task_id}")
+async def mira_patch_anton_task(task_id: int, data: AntonTaskPatch):
+    conn = _get_db()
+    updates = []
+    params = []
+    if data.status is not None:
+        updates.append("status = ?")
+        params.append(data.status)
+    if data.title is not None:
+        updates.append("title = ?")
+        params.append(data.title)
+    if data.description is not None:
+        updates.append("description = ?")
+        params.append(data.description)
+    if data.order_index is not None:
+        updates.append("order_index = ?")
+        params.append(data.order_index)
+    if data.is_archived is not None:
+        updates.append("is_archived = ?")
+        params.append(int(data.is_archived))
+    if not updates:
+        conn.close()
+        return {"ok": True}
+    updates.append("updated_at = datetime('now')")
+    params.append(task_id)
+    conn.execute(f"UPDATE antons_tasks SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.delete("/api/mira/antons-tasks/{task_id}")
+async def mira_delete_anton_task(task_id: int):
+    conn = _get_db()
+    conn.execute("DELETE FROM antons_tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.get("/api/mira/antons-tasks/{task_id}/comments")
+async def mira_anton_task_comments(task_id: int):
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM antons_task_comments WHERE task_id = ? ORDER BY created_at ASC",
+        (task_id,),
+    ).fetchall()
+    conn.close()
+    return {"ok": True, "comments": [_row(r) for r in rows]}
+
+@app.post("/api/mira/antons-tasks/{task_id}/comments")
+async def mira_create_anton_comment(task_id: int, data: AntonTaskCommentCreate):
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO antons_task_comments (task_id, text, author, created_at) VALUES (?, ?, ?, datetime('now'))",
+        (task_id, data.text, data.author),
+    )
+    new_id = conn.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": new_id}
+
+@app.delete("/api/mira/antons-tasks/{task_id}/comments/{comment_id}")
+async def mira_delete_anton_comment(task_id: int, comment_id: int):
+    conn = _get_db()
+    conn.execute("DELETE FROM antons_task_comments WHERE id = ? AND task_id = ?", (comment_id, task_id))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.post("/api/mira/antons-tasks/reorder")
+async def mira_reorder_anton_tasks(data: AntonTaskReorder):
+    conn = _get_db()
+    for item in data.items:
+        conn.execute(
+            "UPDATE antons_tasks SET order_index = ?, updated_at = datetime('now') WHERE id = ?",
+            (item.order_index, item.task_id),
+        )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.get("/api/mira/antons-tasks/statuses")
+async def mira_anton_task_statuses():
+    return {"ok": True, "statuses": ANTON_TASK_STATUSES}
+
+# ─── Mira API: Задачи Ассистента ──────────────────────────────────────────────
+
+@app.get("/api/mira/assistant-tasks")
+async def mira_list_assistant_tasks(archived: Optional[bool] = Query(False), status: Optional[str] = Query(None)):
+    conn = _get_db()
+    where = "WHERE (at.is_archived IS NULL OR at.is_archived = 0)" if not archived else "WHERE at.is_archived = 1"
+    params = []
+    if status:
+        where += " AND at.status = ?"
+        params.append(status)
+    rows = conn.execute(
+        f"SELECT at.*, (SELECT COUNT(*) FROM assistant_task_comments WHERE task_id = at.id) as comments_count "
+        f"FROM assistant_tasks at {where} ORDER BY at.status, at.order_index, at.created_at DESC",
+        params,
+    ).fetchall()
+    conn.close()
+    return {"ok": True, "tasks": [_row(r) for r in rows]}
+
+@app.post("/api/mira/assistant-tasks")
+async def mira_create_assistant_task(data: AssistantTaskCreate):
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO assistant_tasks (title, status, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))",
+        (data.title, data.status),
+    )
+    new_id = conn.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": new_id}
+
+@app.patch("/api/mira/assistant-tasks/{task_id}")
+async def mira_patch_assistant_task(task_id: int, data: AssistantTaskPatch):
+    conn = _get_db()
+    updates = []
+    params = []
+    if data.status is not None:
+        updates.append("status = ?")
+        params.append(data.status)
+    if data.title is not None:
+        updates.append("title = ?")
+        params.append(data.title)
+    if data.description is not None:
+        updates.append("description = ?")
+        params.append(data.description)
+    if data.order_index is not None:
+        updates.append("order_index = ?")
+        params.append(data.order_index)
+    if data.is_archived is not None:
+        updates.append("is_archived = ?")
+        params.append(int(data.is_archived))
+    if not updates:
+        conn.close()
+        return {"ok": True}
+    updates.append("updated_at = datetime('now')")
+    params.append(task_id)
+    conn.execute(f"UPDATE assistant_tasks SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.delete("/api/mira/assistant-tasks/{task_id}")
+async def mira_delete_assistant_task(task_id: int):
+    conn = _get_db()
+    conn.execute("DELETE FROM assistant_tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.get("/api/mira/assistant-tasks/{task_id}/comments")
+async def mira_assistant_task_comments(task_id: int):
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM assistant_task_comments WHERE task_id = ? ORDER BY created_at ASC",
+        (task_id,),
+    ).fetchall()
+    conn.close()
+    return {"ok": True, "comments": [_row(r) for r in rows]}
+
+@app.post("/api/mira/assistant-tasks/{task_id}/comments")
+async def mira_create_assistant_comment(task_id: int, data: AssistantTaskCommentCreate):
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO assistant_task_comments (task_id, text, author, created_at) VALUES (?, ?, ?, datetime('now'))",
+        (task_id, data.text, data.author),
+    )
+    new_id = conn.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": new_id}
+
+@app.delete("/api/mira/assistant-tasks/{task_id}/comments/{comment_id}")
+async def mira_delete_assistant_comment(task_id: int, comment_id: int):
+    conn = _get_db()
+    conn.execute("DELETE FROM assistant_task_comments WHERE id = ? AND task_id = ?", (comment_id, task_id))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.post("/api/mira/assistant-tasks/reorder")
+async def mira_reorder_assistant_tasks(data: AssistantTaskReorder):
+    conn = _get_db()
+    for item in data.items:
+        conn.execute(
+            "UPDATE assistant_tasks SET order_index = ?, updated_at = datetime('now') WHERE id = ?",
+            (item.order_index, item.task_id),
+        )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.get("/api/mira/assistant-tasks/statuses")
+async def mira_assistant_task_statuses():
+    return {"ok": True, "statuses": ASSISTANT_TASK_STATUSES}
+
+# ─── Mira API: Задачи по клиентам (tasks) ──────────────────────────────────────
+
+@app.get("/api/mira/client-tasks")
+async def mira_list_client_tasks(client_id: Optional[int] = Query(None)):
+    conn = _get_db()
+    if client_id:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE client_id = ? ORDER BY created_at DESC", (client_id,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT t.*, c.name as client_name, c.telegram_nick FROM tasks t LEFT JOIN clients c ON t.client_id = c.id ORDER BY t.created_at DESC LIMIT 100"
+        ).fetchall()
+    conn.close()
+    return {"ok": True, "tasks": [_row(r) for r in rows]}
+
+@app.post("/api/mira/client-tasks")
+async def mira_create_client_task(data: TaskCreate):
+    conn = _get_db()
+    if not data.client_id:
+        conn.close()
+        raise HTTPException(400, "client_id is required")
+    conn.execute(
+        "INSERT INTO tasks (client_id, title, type, due_date, description, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+        (data.client_id, data.title, data.task_type, data.due_date, data.description),
+    )
+    new_id = conn.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": new_id}
+
+@app.patch("/api/mira/client-tasks/{task_id}")
+async def mira_patch_client_task(task_id: int, data: TaskPatch):
+    conn = _get_db()
+    updates = []
+    params = []
+    if data.status is not None:
+        updates.append("status = ?")
+        params.append(data.status)
+    if data.title is not None:
+        updates.append("title = ?")
+        params.append(data.title)
+    if data.task_type is not None:
+        updates.append("type = ?")
+        params.append(data.task_type)
+    if data.due_date is not None:
+        updates.append("due_date = ?")
+        params.append(data.due_date)
+    if data.description is not None:
+        updates.append("description = ?")
+        params.append(data.description)
+    if not updates:
+        conn.close()
+        return {"ok": True}
+    params.append(task_id)
+    conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.delete("/api/mira/client-tasks/{task_id}")
+async def mira_delete_client_task(task_id: int):
+    conn = _get_db()
+    conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+# ─── Mira API: Файлы и чеклисты ───────────────────────────────────────────────
+
+@app.get("/api/mira/task-files")
+async def mira_list_task_files(task_type: str = Query(...), task_id: int = Query(...)):
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM task_files WHERE task_type = ? AND task_id = ? ORDER BY created_at DESC",
+        (task_type, task_id),
+    ).fetchall()
+    conn.close()
+    files = []
+    for r in rows:
+        f = dict(r)
+        f["download_url"] = f"/api/files/{f['id']}/download"
+        files.append(f)
+    return {"ok": True, "files": files}
+
+@app.post("/api/mira/task-files")
+async def mira_create_task_file(data: dict):
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO task_files (task_type, task_id, original_name, file_path, mime_type, file_size, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
+        (data["task_type"], data["task_id"], data["original_name"], data.get("file_path", ""), data.get("mime_type", ""), int(data.get("file_size", 0))),
+    )
+    new_id = conn.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": new_id}
+
+@app.delete("/api/mira/task-files/{file_id}")
+async def mira_delete_task_file(file_id: int):
+    conn = _get_db()
+    conn.execute("DELETE FROM task_files WHERE id = ?", (file_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.get("/api/mira/task-checklist")
+async def mira_list_task_checklist(task_type: str = Query(...), task_id: int = Query(...)):
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM task_checklist_items WHERE task_type = ? AND task_id = ? ORDER BY order_index, id",
+        (task_type, task_id),
+    ).fetchall()
+    conn.close()
+    return {"ok": True, "items": [_row(r) for r in rows]}
+
+@app.post("/api/mira/task-checklist")
+async def mira_create_checklist_item(data: dict):
+    text = data.get("text", "").strip()
+    task_type = data.get("task_type", "")
+    task_id = data.get("task_id")
+    if not text or not task_id:
+        raise HTTPException(400, "text and task_id required")
+    conn = _get_db()
+    row = conn.execute(
+        "SELECT COALESCE(MAX(order_index), -1) + 1 as next FROM task_checklist_items WHERE task_type = ? AND task_id = ?",
+        (task_type, task_id),
+    ).fetchone()
+    next_idx = _scalar(row) if row else 0
+    conn.execute(
+        "INSERT INTO task_checklist_items (task_type, task_id, text, order_index, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+        (task_type, task_id, text, next_idx),
+    )
+    new_id = conn.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": new_id}
+
+@app.patch("/api/mira/task-checklist/{item_id}")
+async def mira_patch_checklist_item(item_id: int, data: dict):
+    conn = _get_db()
+    if "done" in data:
+        conn.execute("UPDATE task_checklist_items SET done = ? WHERE id = ?", (int(data["done"]), item_id))
+    if "text" in data:
+        conn.execute("UPDATE task_checklist_items SET text = ? WHERE id = ?", (data["text"], item_id))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.delete("/api/mira/task-checklist/{item_id}")
+async def mira_delete_checklist_item(item_id: int):
+    conn = _get_db()
+    conn.execute("DELETE FROM task_checklist_items WHERE id = ?", (item_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+# ─── Mira API: Поиск по всем задачам ──────────────────────────────────────────
+
+@app.get("/api/mira/tasks/search")
+async def mira_search_tasks(q: str = Query(...)):
+    pattern = f"%{q}%"
+    conn = _get_db()
+    results = []
+    # Антон
+    rows = conn.execute(
+        "SELECT id, title, description, status, 'antons' as source, created_at FROM antons_tasks WHERE title LIKE ? OR description LIKE ? ORDER BY created_at DESC LIMIT 20",
+        (pattern, pattern),
+    ).fetchall()
+    results.extend(_row(r) for r in rows)
+    # Ассистент
+    rows = conn.execute(
+        "SELECT id, title, description, status, 'assistant' as source, created_at FROM assistant_tasks WHERE title LIKE ? OR description LIKE ? ORDER BY created_at DESC LIMIT 20",
+        (pattern, pattern),
+    ).fetchall()
+    results.extend(_row(r) for r in rows)
+    # Клиентские
+    rows = conn.execute(
+        "SELECT t.id, t.title, t.description, t.status, 'client' as source, t.created_at, c.name as client_name FROM tasks t LEFT JOIN clients c ON t.client_id = c.id WHERE t.title LIKE ? OR t.description LIKE ? ORDER BY t.created_at DESC LIMIT 20",
+        (pattern, pattern),
+    ).fetchall()
+    results.extend(_row(r) for r in rows)
+    conn.close()
+    return {"ok": True, "results": results}
+
+
+# ─── Mira API: Клиенты (ограниченный доступ для Миры) ─────────────────────────
+
+@app.get("/api/mira/clients")
+async def mira_list_clients(search: Optional[str] = Query(None), limit: int = Query(20)):
+    conn = _get_db()
+    if search:
+        pattern = f"%{search}%"
+        rows = conn.execute(
+            "SELECT id, name, telegram_nick, phone, status, source, last_contact FROM clients WHERE name LIKE ? OR telegram_nick LIKE ? OR phone LIKE ? ORDER BY last_contact DESC NULLS LAST LIMIT ?",
+            (pattern, pattern, pattern, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, name, telegram_nick, phone, status, source, last_contact FROM clients ORDER BY last_contact DESC NULLS LAST LIMIT ?",
+            (limit,),
+        ).fetchall()
+    conn.close()
+    return {"ok": True, "clients": [_row(r) for r in rows]}
+
+@app.get("/api/mira/clients/{client_id}")
+async def mira_get_client(client_id: int):
+    conn = _get_db()
+    row = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Client not found")
+    client = dict(row)
+    # Последние заметки
+    notes = conn.execute("SELECT id, text, created_at FROM notes WHERE client_id = ? ORDER BY created_at DESC LIMIT 10", (client_id,)).fetchall()
+    client["recent_notes"] = [dict(n) for n in notes]
+    # Последние задачи
+    tasks = conn.execute("SELECT id, title, type, status, due_date, created_at FROM tasks WHERE client_id = ? ORDER BY created_at DESC LIMIT 10", (client_id,)).fetchall()
+    client["recent_tasks"] = [dict(t) for t in tasks]
+    conn.close()
+    return {"ok": True, "client": client}
 
 
 if __name__ == "__main__":

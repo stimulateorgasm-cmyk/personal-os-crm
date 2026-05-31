@@ -39,6 +39,8 @@ function CRMApp() {
   })
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [selectedAssistantTaskId, setSelectedAssistantTaskId] = useState<number | null>(null)
+  const [selectedDealId, setSelectedDealId] = useState<number | null>(null)
+  const [highlightTestId, setHighlightTestId] = useState<number | null>(null)
 
   useEffect(() => {
     localStorage.setItem("crm_page", page)
@@ -65,6 +67,41 @@ function CRMApp() {
     return () => window.removeEventListener("open-client", handler)
   }, [])
 
+  // Listen for open-deal events — navigate to deals page and highlight
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<number>
+      if (ce.detail) {
+        localStorage.setItem("crm_page", "deals")
+        setPage("deals")
+        setSelectedDealId(ce.detail)
+        setSelectedClientId(null)
+        setSelectedTaskId(null)
+        setSelectedAssistantTaskId(null)
+      }
+    }
+    window.addEventListener("open-deal", handler)
+    return () => window.removeEventListener("open-deal", handler)
+  }, [])
+
+  // Listen for open-test events — navigate to quiz page and highlight
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{clientId: number; testId: number}>
+      if (ce.detail) {
+        localStorage.setItem("crm_page", "quiz")
+        setPage("quiz")
+        setHighlightTestId(ce.detail.testId)
+        setSelectedClientId(null)
+        setSelectedTaskId(null)
+        setSelectedAssistantTaskId(null)
+        setSelectedDealId(null)
+      }
+    }
+    window.addEventListener("open-test", handler)
+    return () => window.removeEventListener("open-test", handler)
+  }, [])
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-screen bg-zinc-950">
@@ -78,13 +115,13 @@ function CRMApp() {
   }
 
   return (
-    <Layout active={page} onNavigate={(p) => { setPage(p); setSelectedClientId(null); setSelectedTaskId(null); setSelectedAssistantTaskId(null) }}>
+    <Layout active={page} onNavigate={(p) => { setPage(p); setSelectedClientId(null); setSelectedTaskId(null); setSelectedAssistantTaskId(null); setSelectedDealId(null) }}>
       <ErrorBoundary key={page}>
         {page === "clients" && <ClientsList onSelect={setSelectedClientId} selectedId={selectedClientId} />}
         {page === "funnel" && <Funnel onSelect={setSelectedClientId} />}
-        {page === "deals" && <DealsList onSelect={setSelectedClientId} />}
+        {page === "deals" && <DealsList onSelect={setSelectedClientId} highlightDealId={selectedDealId} onDealHighlighted={() => setSelectedDealId(null)} />}
         {page === "stats" && <StatsDashboard onSelectClient={setSelectedClientId} />}
-        {page === "quiz" && <QuizDashboard />}
+        {page === "quiz" && <QuizDashboard highlightTestId={highlightTestId} onTestHighlighted={() => setHighlightTestId(null)} />}
         {page === "tasks" && <TasksDashboard onSelectClient={setSelectedClientId} />}
             <Suspense fallback={<div className="p-4 text-zinc-500">Загрузка...</div>}>
         {page === "antons-tasks" && <AntonsTasks onSelect={setSelectedTaskId} />}
@@ -95,11 +132,9 @@ function CRMApp() {
       </ErrorBoundary>
 
       <SheetProvider>
-        <ErrorBoundary key={`sheet-${selectedClientId}`}>
-          <ClientSheet clientId={selectedClientId} onClose={() => setSelectedClientId(null)} />
-          <TaskSheet taskId={selectedTaskId} onClose={() => setSelectedTaskId(null)} />
-          <AssistantTaskSheet taskId={selectedAssistantTaskId} onClose={() => setSelectedAssistantTaskId(null)} />
-        </ErrorBoundary>
+        <ClientSheet clientId={selectedClientId} onClose={() => setSelectedClientId(null)} />
+        <TaskSheet taskId={selectedTaskId} onClose={() => setSelectedTaskId(null)} />
+        <AssistantTaskSheet taskId={selectedAssistantTaskId} onClose={() => setSelectedAssistantTaskId(null)} />
         <MiraGlobalChat />
       </SheetProvider>
     </Layout>

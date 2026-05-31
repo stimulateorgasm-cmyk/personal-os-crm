@@ -99,3 +99,9 @@ export function tgLink(nick: string | null | undefined): string | null {
   const clean = nick.replace("@", "")
   return `https://t.me/${clean}`
 }
+
+/** Ссылка на пользователя по telegram_id (tg://user?id=...) */
+export function tgUserLink(tid: string | null | undefined): string | null {
+  if (!tid) return null
+  return `tg://user?id=${tid}`
+}

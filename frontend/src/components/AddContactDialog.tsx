@@ -92,7 +92,7 @@ export function AddContactDialog({ open, onOpenChange, onSelectClient }: AddCont
 
   return (
     <Dialog open={open} onOpenChange={(o) => { onOpenChange(o); if (!o) { resetForm() } }}>
-      <DialogContent className="sm:max-w-md bg-zinc-950 border-zinc-800">
+      <DialogContent className="sm:max-w-md bg-zinc-950 border-zinc-800 overflow-y-auto max-h-[85vh]">
         <DialogHeader>
           <DialogTitle className="text-white">Новый контакт</DialogTitle>
         </DialogHeader>

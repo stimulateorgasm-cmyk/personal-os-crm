@@ -1,5 +1,4 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from "react"
-import { ErrorBoundary } from "@/components/ErrorBoundary"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -19,7 +18,7 @@ import { authFetch, API } from "@/hooks/use-api"
 import { DealEditor } from "@/components/DealEditor"
 import { InlineSelect } from "@/components/InlineSelect"
 import { InlineEdit } from "@/components/InlineEdit"
-import { QuickDatePicker } from "@/components/QuickDatePicker"
+import { DateInput } from "@/components/DateInput"
 import type { Deal } from "@/hooks/use-api"
 
 const LIMIT = 50
@@ -61,9 +60,9 @@ const ACT_OPTIONS = [
   { value: "есть", label: "есть", color: "#22c55e" },
 ]
 
-interface DealsListProps { onSelect: (clientId: number) => void; highlightDealId?: number | null }
+interface DealsListProps { onSelect: (clientId: number) => void; highlightDealId?: number | null; onDealHighlighted?: () => void }
 
-export function DealsList({ onSelect, highlightDealId }: DealsListProps) {
+export function DealsList({ onSelect, highlightDealId, onDealHighlighted }: DealsListProps) {
   const queryClient = useQueryClient()
   const [editingDeal, setEditingDeal] = useState<number | null>(null)
   const [offset, setOffset] = useState(0)
@@ -71,7 +70,7 @@ export function DealsList({ onSelect, highlightDealId }: DealsListProps) {
   const [sortKey, setSortKey] = useState<string | null>("contract_date")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
   const [showNewDeal, setShowNewDeal] = useState(false)
-  const [newDeal, setNewDeal] = useState({ title: "", amount: "", paid: "" })
+  const [newDeal, setNewDeal] = useState({ title: "", product: "", amount: "", paid: "", purchase_date: "" })
   const [dealClientId, setDealClientId] = useState<number | null>(null)
   const [clientQuery, setClientQuery] = useState("")
   const [dateFrom, setDateFrom] = useState(() => new URLSearchParams(window.location.search).get("date_from") || "")
@@ -107,6 +106,30 @@ export function DealsList({ onSelect, highlightDealId }: DealsListProps) {
     window.history.replaceState(null, "", url)
   }, [dateFrom, dateTo, debtOnly, showArchived])
 
+  // Scroll to highlighted deal — retry until element appears in DOM
+  const highlightTimer = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => {
+    if (highlightDealId === null) return
+    // Try finding the element every 200ms until it exists or 5s passes
+    let attempts = 0
+    const maxAttempts = 25
+    const tryScroll = () => {
+      const el = document.querySelector(`[data-deal-id="${highlightDealId}"]`)
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" })
+        highlightTimer.current = setTimeout(() => onDealHighlighted?.(), 3000)
+      } else if (++attempts < maxAttempts) {
+        highlightTimer.current = setTimeout(tryScroll, 200)
+      } else {
+        // Give up after 5s — still call callback so it doesn't hang forever
+        onDealHighlighted?.()
+      }
+    }
+    tryScroll()
+    return () => { clearTimeout(highlightTimer.current) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightDealId])
+
   const queryParams = useMemo(() => {
     const p = new URLSearchParams()
     p.set("limit", String(LIMIT))
@@ -117,8 +140,9 @@ export function DealsList({ onSelect, highlightDealId }: DealsListProps) {
     if (appliedAmountMin) p.set("amount_min", appliedAmountMin)
     if (appliedAmountMax) p.set("amount_max", appliedAmountMax)
     if (debtOnly) p.set("debt_only", "true")
+    if (search) p.set("search", search)
     return p.toString()
-  }, [offset, dateFrom, dateTo, appliedAmountMin, appliedAmountMax, debtOnly])
+  }, [offset, dateFrom, dateTo, appliedAmountMin, appliedAmountMax, debtOnly, search])
 
   const { data, isLoading } = useQuery({
     queryKey: ["deals", queryParams],
@@ -144,7 +168,7 @@ export function DealsList({ onSelect, highlightDealId }: DealsListProps) {
       queryClient.invalidateQueries({ queryKey: ["deals"] })
       queryClient.invalidateQueries({ queryKey: ["clients"] })
       setShowNewDeal(false)
-      setNewDeal({ title: "", amount: "", paid: "" })
+      setNewDeal({ title: "", product: "", amount: "", paid: "", purchase_date: "" })
       setDealClientId(null)
       setClientQuery("")
     },
@@ -163,19 +187,9 @@ export function DealsList({ onSelect, highlightDealId }: DealsListProps) {
 
   const filtered = useMemo(() => {
     let result = deals
-    if (search) {
-      const q = search.toLowerCase()
-      result = result.filter((d) =>
-        (d.client_name || "").toLowerCase().includes(q) ||
-        (d.telegram_nick || "").toLowerCase().includes(q) ||
-        (d.product || "").toLowerCase().includes(q) ||
-        (d.reg_number || "").toLowerCase().includes(q) ||
-        d.title.toLowerCase().includes(q)
-      )
-    }
     if (debtOnly) result = result.filter((d) => (d.amount || 0) - (d.paid || 0) > 0)
     return result
-  }, [deals, search, debtOnly])
+  }, [deals, debtOnly])
 
   const sorted = useMemo(() => {
     if (!sortKey) return filtered
@@ -218,14 +232,28 @@ export function DealsList({ onSelect, highlightDealId }: DealsListProps) {
             <DialogHeader><DialogTitle>Новая сделка</DialogTitle></DialogHeader>
             <div className="space-y-4 pt-2">
               <div className="space-y-2">
-                <label className="text-xs text-zinc-500">Название</label>
-                <Input value={newDeal.title} onChange={(e) => setNewDeal((p) => ({ ...p, title: e.target.value }))} className="bg-zinc-950 border-zinc-800" placeholder="Терапия, Коучинг..." />
+                <label className="text-xs text-zinc-500">Продукт</label>
+                <select value={newDeal.product}
+                  onChange={(e) => setNewDeal((p) => ({ ...p, product: e.target.value }))}
+                  className="w-full h-10 px-3 text-sm rounded-md bg-zinc-950 border border-zinc-800 text-zinc-200 focus:outline-none focus:border-zinc-600">
+                  <option value="">Выберите продукт</option>
+                  <option value="М-Быстрый старт">М-Быстрый старт</option>
+                  <option value="Ж-Быстрый старт">Ж-Быстрый старт</option>
+                  <option value="Терапия">Терапия</option>
+                  <option value="ЖП">ЖП</option>
+                  <option value="Диагностика">Диагностика</option>
+                  <option value="Обуч. оргазмы">Обуч. оргазмы</option>
+                  <option value="сессии">Сессии</option>
+                </select>
               </div>
               <div className="space-y-2">
-                <label className="text-xs text-zinc-500">Клиент (необязательно)</label>
-                <Input value={clientQuery} onChange={(e) => { setClientQuery(e.target.value); if (!e.target.value) setDealClientId(null) }} className="bg-zinc-950 border-zinc-800" placeholder="Имя или @username..." />
-                {clientQuery && !dealClientId && <ClientSearchResults query={clientQuery} onSelect={(id, name) => { setDealClientId(id); setClientQuery(name) }} />}
-                {dealClientId && <p className="text-[10px] text-emerald-500">{clientQuery}</p>}
+                <label className="text-xs text-zinc-500">Клиент</label>
+                <div className="relative">
+                  <Input value={clientQuery} onChange={(e) => { setClientQuery(e.target.value); if (!e.target.value) setDealClientId(null) }}
+                    className="bg-zinc-950 border-zinc-800" placeholder="Имя или @username..." />
+                  {clientQuery && !dealClientId && <ClientSearchResults query={clientQuery} onSelect={(id, name) => { setDealClientId(id); setClientQuery(name) }} autoSelect />}
+                  {dealClientId && <p className="text-[10px] text-emerald-500 mt-1">✓ {clientQuery}</p>}
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
@@ -237,7 +265,16 @@ export function DealsList({ onSelect, highlightDealId }: DealsListProps) {
                   <Input value={newDeal.paid} onChange={(e) => setNewDeal((p) => ({ ...p, paid: e.target.value }))} className="bg-zinc-950 border-zinc-800" type="number" />
                 </div>
               </div>
-              <Button className="w-full" disabled={!newDeal.title || createDeal.isPending} onClick={() => createDeal.mutate({ title: newDeal.title, client_id: dealClientId, amount: parseFloat(newDeal.amount) || 0, paid: parseFloat(newDeal.paid) || 0 })}>
+              <div className="space-y-2">
+                <label className="text-xs text-zinc-500">Дата сделки</label>
+                <DateInput value={newDeal.purchase_date} onChange={(iso) => setNewDeal((p) => ({ ...p, purchase_date: iso }))} placeholder="ДД.ММ.ГГГГ" className="w-full" />
+              </div>
+              <Button className="w-full" disabled={!newDeal.product || !dealClientId || createDeal.isPending}
+                onClick={() => {
+                  const clientName = clientQuery || ""
+                  const title = `${newDeal.product} — ${clientName}`
+                  createDeal.mutate({ title, client_id: dealClientId, product: newDeal.product, amount: parseFloat(newDeal.amount) || 0, paid: parseFloat(newDeal.paid) || 0, purchase_date: newDeal.purchase_date || undefined })
+                }}>
                 {createDeal.isPending ? "Создание..." : "Создать"}
               </Button>
             </div>
@@ -340,9 +377,7 @@ export function DealsList({ onSelect, highlightDealId }: DealsListProps) {
         </div>
       )}
 
-      <ErrorBoundary key={`deal-editor-${editingDeal}`}>
-        <DealEditor dealId={editingDeal} onClose={() => setEditingDeal(null)} onSelectClient={onSelect} />
-      </ErrorBoundary>
+      {editingDeal !== null && <DealEditor key={editingDeal} dealId={editingDeal} onClose={() => setEditingDeal(null)} onSelectClient={onSelect} />}
     </div>
   )
 }
@@ -358,7 +393,7 @@ function DealRow({ deal, remainder, onSelect, onDelete, onOpenSheet, patchDeal, 
   const handlePatch = (body: Record<string, any>) => patchDeal.mutate({ id: deal.id, body })
 
   return (
-    <TableRow className={`hover:bg-zinc-800/50 group transition-colors duration-1000 ${highlighted ? "bg-emerald-900/40" : ""}`}>
+    <TableRow data-deal-id={deal.id} className={`hover:bg-zinc-800/50 group transition-colors duration-1000 ${highlighted ? "bg-emerald-900/40" : ""}`}>
       {/* 0 — open button */}
       <TableCell className="sticky left-0 bg-zinc-950 group-hover:bg-zinc-800/50 z-10 w-0">
         <button onClick={() => onOpenSheet(deal.id)}
@@ -405,9 +440,13 @@ function DealRow({ deal, remainder, onSelect, onDelete, onOpenSheet, patchDeal, 
       <TableCell className="font-medium whitespace-nowrap">
         <InlineEdit value={String(deal.amount || 0)} onSave={(v) => handlePatch({ amount: parseFloat(v) || 0 })} type="number" placeholder="0" className="w-20 text-right font-medium" />
       </TableCell>
-      {/* 8 — Оплачено */}
+      {/* 8 — Оплачено — read-only если есть платежи */}
       <TableCell className="whitespace-nowrap">
-        <InlineEdit value={String(deal.paid || 0)} onSave={(v) => handlePatch({ paid: parseFloat(v) || 0 })} type="number" placeholder="0" className="w-20 text-right" />
+        {deal.payment_info && deal.payment_info !== "[]" ? (
+          <span className="text-sm text-zinc-300">{String(deal.paid || 0)}₽</span>
+        ) : (
+          <InlineEdit value={String(deal.paid || 0)} onSave={(v) => handlePatch({ paid: parseFloat(v) || 0 })} type="number" placeholder="0" className="w-20 text-right" />
+        )}
       </TableCell>
       {/* 9 — Остаток */}
       <TableCell className={`whitespace-nowrap font-medium ${remainder > 0 ? "text-orange-400" : "text-zinc-600"}`}>
@@ -423,7 +462,7 @@ function DealRow({ deal, remainder, onSelect, onDelete, onOpenSheet, patchDeal, 
       </TableCell>
       {/* 12 — Дата договора */}
       <TableCell>
-        <QuickDatePicker value={deal.contract_date || ""} onChange={(iso) => handlePatch({ contract_date: iso })} />
+        <DateInput value={deal.contract_date || ""} onChange={(iso) => handlePatch({ contract_date: iso })} placeholder="ДД.ММ.ГГГГ" className="w-28" />
       </TableCell>
       {/* 13 — Акт */}
       <TableCell>
@@ -514,10 +553,19 @@ function DateFilterButton({ value, onChange, placeholder }: { value: string; onC
   )
 }
 
-function ClientSearchResults({ query, onSelect }: { query: string; onSelect: (id: number, name: string) => void }) {
+function ClientSearchResults({ query, onSelect, autoSelect }: { query: string; onSelect: (id: number, name: string) => void; autoSelect?: boolean }) {
   const { data } = useQuery({ queryKey: ["client-search", query], queryFn: () => authFetch(`${API}/api/clients/search?q=${encodeURIComponent(query)}`).then((r) => r.json()), enabled: query.length >= 1 })
-  const clients = Array.isArray(data?.clients) ? data.clients : []
+  const clients: Array<{id: number; name: string; telegram_nick?: string}> = Array.isArray(data?.clients) ? data.clients : []
+
+  // Auto-select if only one result
+  useEffect(() => {
+    if (autoSelect && clients.length === 1 && clients[0]) {
+      onSelect(clients[0].id, clients[0].name)
+    }
+  }, []) // eslint-disable-line
+
   if (clients.length === 0) return null
+  if (autoSelect && clients.length === 1) return null // hidden — auto-selected
   return (
     <div className="mt-1 max-h-40 overflow-y-auto bg-zinc-800 border border-zinc-700 rounded">
       {clients.map((c: any) => (

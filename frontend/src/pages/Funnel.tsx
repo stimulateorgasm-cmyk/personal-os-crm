@@ -6,6 +6,7 @@ import {
   DragOverlay,
   closestCorners,
   PointerSensor,
+  TouchSensor,
   useSensor,
   useSensors,
   useDroppable,
@@ -28,7 +29,8 @@ import { authFetch, API } from "@/hooks/use-api"
 import { Loader2 } from "lucide-react"
 import type { Client } from "@/hooks/use-api"
 import { AddContactDialog } from "@/components/AddContactDialog"
-import { QuickDatePicker } from "@/components/QuickDatePicker"
+import { DateInput } from "@/components/DateInput"
+import { MoveSheet } from "@/components/MoveSheet"
 
 const STAGES = [
   "Контакт",
@@ -84,7 +86,7 @@ function AssigneeBadge({ assignee, className }: { assignee: string; className?: 
 }
 
 // ─── Column ───────────────────────────────────────────────────────────────────
-function StageColumn({ stage, children, count }: { stage: string; children: React.ReactNode; count: number }) {
+function StageColumn({ stage, children, count, withoutTask }: { stage: string; children: React.ReactNode; count: number; withoutTask?: number }) {
   const colors = STAGE_COLORS[stage] || STAGE_COLORS["Контакт"]
   const { setNodeRef, isOver } = useDroppable({ id: `stage-${stage}` })
 
@@ -106,13 +108,20 @@ function StageColumn({ stage, children, count }: { stage: string; children: Reac
             {stage}
           </span>
         </div>
-        <span className={cn(
-          "text-xs font-bold px-2.5 py-1 rounded-full",
-          colors.headerBg.replace("/20", "/40"),
-          colors.headerText
-        )}>
-          {count}
-        </span>
+        <div className="flex items-center gap-1.5">
+          {withoutTask && withoutTask > 0 && stage !== "Контакт" ? (
+            <span className="text-[10px] font-medium text-rose-400 bg-rose-950/30 px-1.5 py-0.5 rounded-full">
+              {withoutTask} без задач
+            </span>
+          ) : null}
+          <span className={cn(
+            "text-xs font-bold px-2.5 py-1 rounded-full",
+            colors.headerBg.replace("/20", "/40"),
+            colors.headerText
+          )}>
+            {count}
+          </span>
+        </div>
       </div>
 
       {/* Cards area */}
@@ -129,10 +138,10 @@ function StageColumn({ stage, children, count }: { stage: string; children: Reac
 }
 
 // ─── Card ──────────────────────────────────────────────────────────────────────
-function SortableCard({ client, isDragging, onCreateTask }: {
-  client: Client; isDragging?: boolean; onCreateTask?: (clientId: number) => void
+function SortableCard({ client, isDragging, onCreateTask, onOpenMenu }: {
+  client: Client; isDragging?: boolean; onCreateTask?: (clientId: number) => void; onOpenMenu?: (clientId: number) => void
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({
     id: `client-${client.id}`,
     data: { client, stage: client.status },
   })
@@ -196,17 +205,25 @@ function SortableCard({ client, isDragging, onCreateTask }: {
       ref={setNodeRef}
       style={style}
       className={cn(
-        "p-4 rounded-xl transition-all duration-150 mb-3",
+        "p-4 rounded-xl transition-all duration-150 mb-3 select-none",
         "hover:shadow-md",
-        "cursor-grab active:cursor-grabbing",
+        "active:cursor-grabbing",
         isDragging && "opacity-40 scale-[0.97]",
         colors.cardBg,
         "border",
         colors.cardBorder,
+        "relative",
       )}
       {...listeners}
       {...attributes}
     >
+      {/* Иконка меню (только мобилки) — открывает Bottom Sheet */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onOpenMenu?.(client.id) }}
+        className="absolute top-2 right-2 text-zinc-500 hover:text-zinc-300 flex items-center justify-center min-h-[44px] min-w-[44px] md:hidden touch-manipulation"
+      >
+        <span className="text-lg leading-none tracking-wider">⋯</span>
+      </button>
       <p className="text-base font-semibold text-white leading-tight">
         {client.name || "Без имени"}
       </p>
@@ -360,7 +377,7 @@ function CardPreview({ client }: { client: Client }) {
 // ─── Skeleton for loading state ────────────────────────────────────────────────
 function FunnelSkeleton() {
   return (
-    <div className="flex gap-4 overflow-x-auto pb-4" style={{ minHeight: "60vh" }}>
+    <div className="flex gap-4 overflow-x-auto pb-4 touch-pan-x" style={{ minHeight: "60vh" }}>
       {STAGES.map((_, i) => (
         <div key={i} className="flex-shrink-0 w-80 rounded-2xl border border-zinc-800/50 bg-zinc-950/30">
           <div className="px-5 py-3.5 border-b border-zinc-800/30">
@@ -401,6 +418,7 @@ export function Funnel({ onSelect }: FunnelProps) {
   const [searchQuery, setSearchQuery] = useState("")
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [taskClientId, setTaskClientId] = useState<number | null>(null)
+  const [moveClientId, setMoveClientId] = useState<number | null>(null)
   const [taskTitle, setTaskTitle] = useState("")
   const [taskDue, setTaskDue] = useState("")
   const [taskType, setTaskType] = useState("follow_up")
@@ -473,9 +491,15 @@ export function Funnel({ onSelect }: FunnelProps) {
     }
   }
 
+  // Только мышь/стилус — touch-устройства скроллят без DnD
+  // TouchSensor с огромным distance никогда не активируется, но перехватывает
+  // touch-события, не давая PointerSensor их обработать
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      activationConstraint: { distance: 8 },        // увеличен порог — меньше ложных драгов
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: { distance: 9999 },
     }),
   )
 
@@ -653,13 +677,13 @@ export function Funnel({ onSelect }: FunnelProps) {
   }
 
   return (
-    <div>
-      <div className="mb-6">
-        <div className="flex items-center justify-between gap-4">
+    <div className="flex flex-col h-full">
+      <div className="sticky top-0 z-20 bg-zinc-950 pb-5 pt-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-xl font-semibold text-white">Воронка продаж</h1>
-            <p className="text-sm text-zinc-500 mt-1">
-              {stats?.total_clients?.toLocaleString() || 0} контактов · перетащи карточку в другую колонку
+            <p className="text-sm text-zinc-500 mt-1.5">
+              {stats?.total_clients?.toLocaleString() || 0} контактов · {stats?.by_status?.filter((s: any) => s.status !== "Контакт").reduce((a: number, s: any) => a + s.count, 0).toLocaleString() || 0} в воронке · перетащи карточку в другую колонку
               {searchQuery.trim() && (
                 <span className="text-amber-400 ml-1">
                   · фильтр: «{searchQuery.trim()}»
@@ -667,7 +691,7 @@ export function Funnel({ onSelect }: FunnelProps) {
               )}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <Button
               size="sm"
               className="gap-1.5 whitespace-nowrap min-h-[44px] min-w-[44px] touch-manipulation"
@@ -676,21 +700,21 @@ export function Funnel({ onSelect }: FunnelProps) {
               <Plus size={16} />
               <span className="hidden sm:inline">Добавить контакт</span>
             </Button>
-            <div className="relative w-48 sm:w-56">
-              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <div className="relative flex-1 sm:flex-none sm:w-64">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
               <input
                 type="text"
                 placeholder="Фильтр по воронке..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-8 pr-7 py-1.5 text-xs rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-600"
+                className="w-full pl-10 pr-8 py-2.5 text-sm rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
               />
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery("")}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 min-h-[28px] min-w-[28px] flex items-center justify-center touch-manipulation"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 min-h-[36px] min-w-[36px] flex items-center justify-center touch-manipulation"
                 >
-                  <X size={14} />
+                  <X size={15} />
                 </button>
               )}
             </div>
@@ -705,14 +729,16 @@ export function Funnel({ onSelect }: FunnelProps) {
         onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
       >
-        <div className="flex gap-5 overflow-x-auto pb-6" style={{ minHeight: "60vh" }}>
+        <div className="flex gap-5 overflow-x-auto pb-6 touch-pan-x" style={{ minHeight: "60vh" }}>
           {STAGES.map((stage) => {
             const cardIds = items[stage] || []
             const stageClients = cardIds
               .map((id) => clients.find((c) => `client-${c.id}` === id))
               .filter(Boolean) as Client[]
             return (
-              <StageColumn key={stage} stage={stage} count={stageClients.length}>
+              <StageColumn key={stage} stage={stage} count={stageClients.length}
+                withoutTask={stats?.by_status?.find((s: any) => s.status === stage)?.without_task}
+              >
                 <SortableContext
                   items={cardIds}
                   strategy={verticalListSortingStrategy}
@@ -769,15 +795,12 @@ export function Funnel({ onSelect }: FunnelProps) {
                             ))}
                           </div>
                           <div className="flex items-center gap-2">
-                            <QuickDatePicker
+                            <DateInput
                               value={taskDue}
                               onChange={setTaskDue}
-                            >
-                              <button className="flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors min-h-[32px] touch-manipulation">
-                                <CalendarClock size={14} />
-                                {taskDue ? taskDue.replace("T", " ") : "Срок"}
-                              </button>
-                            </QuickDatePicker>
+                              showTime
+                              className="w-28"
+                            />
                             <button
                               onClick={() => {
                                 createTask.mutate({ clientId: c.id, title: taskTitle.trim(), due: taskDue, type: taskType })
@@ -794,6 +817,7 @@ export function Funnel({ onSelect }: FunnelProps) {
                         client={c}
                         isDragging={activeId === `client-${c.id}`}
                         onCreateTask={handleCreateTask}
+                        onOpenMenu={setMoveClientId}
                       />
                     </div>
                   ))}
@@ -821,6 +845,14 @@ export function Funnel({ onSelect }: FunnelProps) {
         onOpenChange={setAddDialogOpen}
         onSelectClient={onSelect}
       />
+
+      {/* Bottom Sheet — перемещение карточки (мобилки) */}
+      {moveClientId !== null && (
+        <MoveSheet
+          clientId={moveClientId}
+          onClose={() => setMoveClientId(null)}
+        />
+      )}
     </div>
   )
 }

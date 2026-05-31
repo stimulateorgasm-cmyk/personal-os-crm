@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Users, TrendingUp, BarChart3, Globe, Search, Pencil, Trash2, FileDown, ExternalLink, UserCircle } from "lucide-react"
-import { cn, formatDateTime, displayNick } from "@/lib/utils"
+import { cn, formatDateTime, displayNick, tgUserLink } from "@/lib/utils"
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from "recharts"
 import { downloadFemalePdf } from "@/lib/pdfGenerator"
 
@@ -877,7 +877,7 @@ export default function FemaleTestDashboard() {
                   </TableRow>
                 ) : (
                   paginatedResults.map(r => (
-                    <TableRow key={r.id} className="text-sm">
+                    <TableRow key={r.id} data-test-id={r.id} className="text-sm">
                       <TableCell className="whitespace-nowrap text-zinc-400 py-2.5 px-3">
                         {formatDateTime(r.created_at)}
                       </TableCell>
@@ -890,6 +890,10 @@ export default function FemaleTestDashboard() {
                             <a href={`https://t.me/${r.telegram_username}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline shrink-0" title="Открыть чат">
                               <ExternalLink size={13} />
                             </a>
+                          ) : r.telegram_id ? (
+                            <a href={tgUserLink(r.telegram_id) || "#"} target="_blank" rel="noopener noreferrer" className="text-zinc-500 hover:text-blue-400 shrink-0" title="Написать по ID">
+                              <ExternalLink size={13} />
+                            </a>
                           ) : null}
                           <EditableCell
                             value={r.telegram_username}
@@ -898,6 +902,10 @@ export default function FemaleTestDashboard() {
                             onSave={handleInlineUpdate}
                             renderDisplay={(val) => val ? (
                               <span className="text-primary text-sm truncate max-w-[130px]">{displayNick(val)}</span>
+                            ) : r.telegram_id ? (
+                              <a href={tgUserLink(r.telegram_id) || "#"} target="_blank" rel="noopener noreferrer" className="text-zinc-500 hover:text-blue-400 text-sm truncate max-w-[130px]" title="Написать по ID">
+                                ID {r.telegram_id}
+                              </a>
                             ) : <span className="text-zinc-600">—</span>}
                           />
                         </div>

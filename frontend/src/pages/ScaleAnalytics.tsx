@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { cn, API, tgLink } from "@/lib/utils"
+import { cn, API, tgLink, tgUserLink } from "@/lib/utils"
 import { Search, Download, FileText, Filter, ArrowRight, Trash2, Eye, Users, TrendingUp, DollarSign, Award } from "lucide-react"
 import {
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -371,7 +371,9 @@ export function ScaleAnalytics() {
                     <TableCell className="text-xs text-zinc-500">
                       {r.telegram_username ? (
                         <a href={tgLink(r.telegram_username) || "#"} target="_blank" rel="noopener noreferrer" className="hover:text-blue-400">@{r.telegram_username}</a>
-                      ) : r.telegram_id || "—"}
+                      ) : r.telegram_id ? (
+                        <a href={tgUserLink(r.telegram_id) || "#"} target="_blank" rel="noopener noreferrer" className="hover:text-blue-400">ID {r.telegram_id}</a>
+                      ) : "—"}
                     </TableCell>
                     <TableCell className="text-xs text-zinc-500">{r.phone || "—"}</TableCell>
                     <TableCell className="text-xs text-zinc-500">{r.age ?? "—"}</TableCell>
@@ -492,7 +494,9 @@ function RppResearchTab() {
                 <TableCell className="text-xs text-zinc-500">
                   {r.telegram_username ? (
                     <a href={tgLink(r.telegram_username) || "#"} target="_blank" rel="noopener noreferrer" className="hover:text-blue-400">@{r.telegram_username}</a>
-                  ) : r.telegram_id || "—"}
+                  ) : r.telegram_id ? (
+                    <a href={tgUserLink(r.telegram_id) || "#"} target="_blank" rel="noopener noreferrer" className="hover:text-blue-400">ID {r.telegram_id}</a>
+                  ) : "—"}
                 </TableCell>
                 <TableCell className="text-xs font-semibold">{r.total_score}</TableCell>
                 <TableCell className="text-xs text-zinc-300 max-w-[200px] truncate">{r.diagnosis || "—"}</TableCell>

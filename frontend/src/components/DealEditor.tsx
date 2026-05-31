@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { cn, API } from "@/lib/utils"
-import { QuickDatePicker } from "@/components/QuickDatePicker"
+import { DateInput } from "@/components/DateInput"
 import { InlineSelect } from "@/components/InlineSelect"
 import { Loader2, Plus, Circle, CheckCircle2, Trash2, ExternalLink, X, Pencil, CalendarClock } from "lucide-react"
 
@@ -132,26 +132,32 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
   const [newPayDate, setNewPayDate] = useState("")
   const [newPayStatus, setNewPayStatus] = useState<"paid" | "pending">("paid")
 
+  // Save payments + auto-recalculate paid amount
+  const savePayments = useCallback((updated: Payment[]) => {
+    const totalPaid = updated.filter((p) => p.status === "paid").reduce((sum, p) => sum + p.amount, 0)
+    patchDeal.mutate({ payment_info: JSON.stringify(updated), paid: totalPaid })
+  }, [patchDeal])
+
   const addPayment = useCallback(() => {
     const amount = parseFloat(newPayAmount)
     if (!amount) return
     const date = newPayDate || new Date().toISOString().slice(0, 10)
     const updated = [...payments, { id: nextPayId(), amount, date, status: newPayStatus }]
-    patchDeal.mutate({ payment_info: JSON.stringify(updated) })
+    savePayments(updated)
     setNewPayAmount("")
     setNewPayDate("")
-  }, [newPayAmount, newPayDate, newPayStatus, payments, patchDeal])
+  }, [newPayAmount, newPayDate, newPayStatus, payments, savePayments])
 
   const removePayment = useCallback((payId: number) => {
     const updated = payments.filter((p) => p.id !== payId)
-    patchDeal.mutate({ payment_info: JSON.stringify(updated) })
-  }, [payments, patchDeal])
+    savePayments(updated)
+  }, [payments, savePayments])
 
   if (!dealId) return null
 
   return (
     <Sheet open={!!dealId} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="w-full sm:max-w-lg bg-zinc-950 overflow-y-auto">
+      <SheetContent key={dealId} className="w-full sm:max-w-lg bg-zinc-950 overflow-y-auto">
         {/* Close button — top left */}
         <button
           onClick={onClose}
@@ -171,7 +177,7 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
         )}
 
         {!isLoading && data && (
-          <div className="flex flex-col h-full">
+          <div key={dealId} className="flex flex-col h-full">
             <SheetHeader className="px-0 pt-6 pb-4 sm:pt-2">
               <SheetTitle className="text-base font-semibold text-white">Редактирование сделки</SheetTitle>
             </SheetHeader>
@@ -184,7 +190,7 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
                   <Input
                     defaultValue={data.client_name || ""}
                     className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation flex-1"
-                    onBlur={(e) => { patchDeal.mutate({ client_name: e.target.value }); if (e.target.value) patchDeal.mutate({ title: `${data.product || "Без продукта"} — ${e.target.value}` }) }}
+                    onBlur={(e) => { patchDeal.mutate({ client_name: e.target.value }) }}
                     placeholder="Имя и фамилия"
                   />
                   {onSelectClient && data.client_id && (
@@ -197,16 +203,6 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
                 </div>
               </FieldRow>
 
-              {/* Product + Title in one */}
-              <div className="grid grid-cols-2 gap-2">
-                <FieldRow label="Название">
-                  <Input
-                    defaultValue={data.title}
-                    className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
-                    onBlur={(e) => { if (e.target.value !== data.title) patchDeal.mutate({ title: e.target.value }) }}
-                  />
-                </FieldRow>
-              </div>
               <FieldRow label="Клиент">
                 {editingClient ? (
                   <div className="space-y-1" onClick={(e) => e.stopPropagation()}>
@@ -293,14 +289,26 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
 
               {/* Reg number */}
               <FieldRow label="№ в реестре">
-                <Input defaultValue={data.reg_number || ""} className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
+                <Input defaultValue={data.reg_number || ""} maxLength={10}
+                  className="h-8 w-28 text-xs bg-zinc-900 border-zinc-800 touch-manipulation"
                   onBlur={(e) => { if (e.target.value !== (data.reg_number || "")) patchDeal.mutate({ reg_number: e.target.value }) }} />
               </FieldRow>
 
-              {/* Sessions count */}
-              <FieldRow label="Кол-во сессий">
-                <Input defaultValue={data.sessions_count || ""} className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
-                  onBlur={(e) => { if (e.target.value !== (data.sessions_count || "")) patchDeal.mutate({ sessions_count: e.target.value }) }} />
+              {/* Comments — textarea, auto-grow до 10 строк */}
+              <FieldRow label="Комментарий к сделке">
+                <textarea
+                  key={dealId}
+                  defaultValue={data.sessions_count || ""}
+                  rows={3}
+                  onInput={(e) => {
+                    const el = e.currentTarget
+                    el.style.height = "auto"
+                    el.style.height = Math.min(el.scrollHeight, 10 * 24) + "px"
+                  }}
+                  onBlur={(e) => { if (e.target.value !== (data.sessions_count || "")) patchDeal.mutate({ sessions_count: e.target.value }) }}
+                  className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md bg-zinc-900 border border-zinc-800 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 resize-none touch-manipulation"
+                  placeholder="Заметки о сделке..."
+                />
               </FieldRow>
 
               {/* Amount + Paid + Remainder */}
@@ -343,7 +351,7 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <FieldRow label="Дата договора">
-                  <QuickDatePicker value={data.contract_date || ""} onChange={(iso) => patchDeal.mutate({ contract_date: iso })} />
+                  <DateInput value={data.contract_date || ""} onChange={(iso) => patchDeal.mutate({ contract_date: iso })} placeholder="ДД.ММ.ГГГГ" className="w-full" />
                 </FieldRow>
                 <FieldRow label="Акт">
                   <InlineSelect value={data.act_status || "-"} options={[
@@ -357,52 +365,46 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
               {/* Extra section */}
               <Separator className="bg-zinc-800/30" />
               <p className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium">Дополнительно</p>
-              <div className="grid grid-cols-2 gap-2">
-                <FieldRow label="% ассистента">
-                  <Input defaultValue={data.assistant_pct || ""} className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
+              <div className="grid grid-cols-3 gap-2">
+                <FieldRow label="% ассист.">
+                  <Input defaultValue={data.assistant_pct || ""} maxLength={10}
+                    className="h-8 text-xs bg-zinc-900 border-zinc-800 touch-manipulation"
                     onBlur={(e) => { if (e.target.value !== (data.assistant_pct || "")) patchDeal.mutate({ assistant_pct: e.target.value }) }} />
                 </FieldRow>
-                <FieldRow label="Источник / Реферал">
-                  <Input defaultValue={data.source || ""} className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
-                    onBlur={(e) => { if (e.target.value !== (data.source || "")) patchDeal.mutate({ source: e.target.value }) }} />
-                </FieldRow>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
                 <FieldRow label="% рефа">
-                  <Input defaultValue={data.referral_pct || ""} className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
+                  <Input defaultValue={data.referral_pct || ""} maxLength={10}
+                    className="h-8 text-xs bg-zinc-900 border-zinc-800 touch-manipulation"
                     onBlur={(e) => { if (e.target.value !== (data.referral_pct || "")) patchDeal.mutate({ referral_pct: e.target.value }) }} />
                 </FieldRow>
-                <FieldRow label="Выплачено рефу">
-                  <Input defaultValue={data.referral_paid || ""} className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
+                <FieldRow label="Выпл. рефу">
+                  <Input defaultValue={data.referral_paid || ""} maxLength={10}
+                    className="h-8 text-xs bg-zinc-900 border-zinc-800 touch-manipulation"
                     onBlur={(e) => { if (e.target.value !== (data.referral_paid || "")) patchDeal.mutate({ referral_paid: e.target.value }) }} />
                 </FieldRow>
               </div>
+              <FieldRow label="Источник / Реферал">
+                <Input defaultValue={data.source || ""}
+                  className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
+                  onBlur={(e) => { if (e.target.value !== (data.source || "")) patchDeal.mutate({ source: e.target.value }) }} />
+              </FieldRow>
 
-              {/* Sessions */}
+              {/* Sessions — с редактированием названия */}
               <Separator className="bg-zinc-800/30" />
               <FieldRow label={`Сессии (${sessions.length})`}>
                 <div className="space-y-2">
                   {sessions.map((s) => (
-                    <div key={s.id} className="flex items-center gap-2">
-                      <button
-                        onClick={() => toggleSession(s.id)}
-                        className="shrink-0 text-zinc-500 hover:text-emerald-400 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center touch-manipulation"
-                      >
-                        {s.done ? <CheckCircle2 size={18} className="text-emerald-500" /> : <Circle size={18} />}
-                      </button>
-                      <span className={cn(
-                        "flex-1 text-sm",
-                        s.done ? "text-zinc-600 line-through" : "text-zinc-200"
-                      )}>
-                        {s.title}
-                      </span>
-                      <button
-                        onClick={() => removeSession(s.id)}
-                        className="shrink-0 text-zinc-600 hover:text-red-400 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center touch-manipulation"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
+                    <SessionRow
+                      key={s.id}
+                      session={s}
+                      onToggle={() => toggleSession(s.id)}
+                      onRename={(title) => {
+                        const updated = parseSessions(data.sessions).map((x) =>
+                          x.id === s.id ? { ...x, title } : x
+                        )
+                        patchDeal.mutate({ sessions: JSON.stringify(updated) })
+                      }}
+                      onRemove={() => removeSession(s.id)}
+                    />
                   ))}
                   {sessionsOpen && (
                     <div className="flex gap-2">
@@ -429,33 +431,21 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
                 </div>
               </FieldRow>
 
-              {/* Payments */}
+              {/* Payments — с редактированием */}
               <FieldRow label={`Оплаты (${payments.length})`}>
                 <div className="space-y-2">
                   {payments.map((p) => (
-                    <div key={p.id} className="flex items-center gap-2 p-3 sm:p-2.5 rounded-lg bg-zinc-900 border border-zinc-800">
-                      <div className="flex-1 min-w-0">
-                        <span className={cn(
-                          "text-sm font-medium",
-                          p.status === "paid" ? "text-emerald-400" : "text-amber-400"
-                        )}>
-                          {p.amount.toLocaleString()}₽
-                        </span>
-                        {p.date && <span className="text-xs text-zinc-500 ml-2">{p.date}</span>}
-                        <span className={cn(
-                          "text-[10px] ml-2 px-1.5 py-0.5 rounded",
-                          p.status === "paid" ? "bg-emerald-950/40 text-emerald-400" : "bg-amber-950/40 text-amber-400"
-                        )}>
-                          {p.status === "paid" ? "Оплачено" : "Ожидает"}
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => removePayment(p.id)}
-                        className="shrink-0 text-zinc-600 hover:text-red-400 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center touch-manipulation"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
+                    <PaymentRow
+                      key={p.id}
+                      payment={p}
+                      onUpdate={(updated) => {
+                        const all = parsePayments(data.payment_info).map((x) =>
+                          x.id === p.id ? updated : x
+                        )
+                        savePayments(all)
+                      }}
+                      onRemove={() => removePayment(p.id)}
+                    />
                   ))}
                   {paymentsOpen && (
                     <div className="flex flex-col gap-2 p-3 rounded-lg bg-zinc-900 border border-zinc-800">
@@ -508,21 +498,15 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
 
               {/* Date */}
               <FieldRow label="Дата покупки">
-                <div className="flex items-center gap-2">
-                  <QuickDatePicker
-                    value={data.purchase_date || ""}
-                    onChange={(iso) => patchDeal.mutate({ purchase_date: iso })}
-                  />
-                  {data.purchase_date && (
-                    <button
-                      onClick={() => patchDeal.mutate({ purchase_date: "" })}
-                      className="text-zinc-600 hover:text-zinc-400 text-[10px]"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
+                <DateInput value={data.purchase_date || ""} onChange={(iso) => patchDeal.mutate({ purchase_date: iso })} placeholder="ДД.ММ.ГГГГ" className="w-full" />
               </FieldRow>
+            </div>
+
+            {/* Save/Close button */}
+            <div className="sticky bottom-0 bg-zinc-950 pt-4 pb-2 px-5 sm:px-1">
+              <Button onClick={onClose} className="w-full gap-2" size="sm">
+                <CheckCircle2 size={16} />Готово
+              </Button>
             </div>
           </div>
         )}
@@ -536,6 +520,116 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
     <div className="space-y-1.5">
       <label className="text-[11px] text-zinc-500 font-medium">{label}</label>
       {children}
+    </div>
+  )
+}
+
+// ─── Session row with inline rename ─────────────────────────────────────────────
+function SessionRow({ session, onToggle, onRename, onRemove }: {
+  session: Session; onToggle: () => void; onRename: (title: string) => void; onRemove: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(session.title)
+
+  useEffect(() => { setValue(session.title); setEditing(false) }, [session.title])
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-2">
+        <button onClick={onToggle}
+          className="shrink-0 text-zinc-500 hover:text-emerald-400 min-h-[44px] min-w-[44px] flex items-center justify-center">
+          {session.done ? <CheckCircle2 size={18} className="text-emerald-500" /> : <Circle size={18} />}
+        </button>
+        <input
+          autoFocus
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={() => { onRename(value); setEditing(false) }}
+          onKeyDown={(e) => { if (e.key === "Enter") { onRename(value); setEditing(false) } }}
+          className="flex-1 h-8 px-2 text-sm rounded bg-zinc-950 border border-zinc-700 text-zinc-200 focus:outline-none focus:border-zinc-500"
+        />
+        <button onClick={onRemove}
+          className="shrink-0 text-zinc-600 hover:text-red-400 min-h-[44px] min-w-[44px] flex items-center justify-center">
+          <Trash2 size={14} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <button onClick={onToggle}
+        className="shrink-0 text-zinc-500 hover:text-emerald-400 min-h-[44px] min-w-[44px] flex items-center justify-center">
+        {session.done ? <CheckCircle2 size={18} className="text-emerald-500" /> : <Circle size={18} />}
+      </button>
+      <button onClick={() => setEditing(true)}
+        className={cn("flex-1 text-sm text-left", session.done ? "text-zinc-600 line-through" : "text-zinc-200")}>
+        {session.title}
+      </button>
+      <button onClick={onRemove}
+        className="shrink-0 text-zinc-600 hover:text-red-400 min-h-[44px] min-w-[44px] flex items-center justify-center">
+        <Trash2 size={14} />
+      </button>
+    </div>
+  )
+}
+
+// ─── Payment row with inline edit ────────────────────────────────────────────────
+function PaymentRow({ payment, onUpdate, onRemove }: {
+  payment: Payment; onUpdate: (p: Payment) => void; onRemove: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [amount, setAmount] = useState(String(payment.amount))
+  const [date, setDate] = useState(payment.date || "")
+  const [status, setStatus] = useState(payment.status)
+
+  useEffect(() => { setAmount(String(payment.amount)); setDate(payment.date || ""); setStatus(payment.status); setEditing(false) }, [payment])
+
+  const save = () => {
+    onUpdate({ id: payment.id, amount: parseFloat(amount) || 0, date, status: status as "paid" | "pending" })
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div className="flex flex-col gap-2 p-3 rounded-lg bg-zinc-900 border border-zinc-800">
+        <div className="flex items-center gap-2">
+          <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)}
+            className="h-8 w-24 px-2 text-sm rounded bg-zinc-950 border border-zinc-700 text-zinc-200 focus:outline-none focus:border-zinc-500" />
+          <span className="text-xs text-zinc-500">₽</span>
+          <DateInput value={date} onChange={(iso) => setDate(iso)} placeholder="ДД.ММ.ГГГГ" className="flex-1" />
+        </div>
+        <div className="flex items-center gap-2">
+          <select value={status} onChange={(e) => setStatus(e.target.value as "paid" | "pending")}
+            className="h-8 text-xs rounded bg-zinc-950 border border-zinc-700 text-zinc-200 focus:outline-none focus:border-zinc-500 px-2">
+            <option value="paid">Оплачено</option>
+            <option value="pending">Ожидает</option>
+          </select>
+          <button onClick={save} className="h-8 px-3 text-xs rounded bg-emerald-700 text-white hover:bg-emerald-600">OK</button>
+          <button onClick={() => setEditing(false)} className="text-xs text-zinc-500 hover:text-zinc-300 ml-auto">Отмена</button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-2 p-3 sm:p-2.5 rounded-lg bg-zinc-900 border border-zinc-800">
+      <button onClick={() => setEditing(true)} className="flex-1 min-w-0 text-left">
+        <span className={cn("text-sm font-medium", status === "paid" ? "text-emerald-400" : "text-amber-400")}>
+          {payment.amount.toLocaleString()}₽
+        </span>
+        {date && <span className="text-xs text-zinc-500 ml-2">{date}</span>}
+        <span className={cn(
+          "text-[10px] ml-2 px-1.5 py-0.5 rounded",
+          status === "paid" ? "bg-emerald-950/40 text-emerald-400" : "bg-amber-950/40 text-amber-400"
+        )}>
+          {status === "paid" ? "Оплачено" : "Ожидает"}
+        </span>
+      </button>
+      <button onClick={onRemove}
+        className="shrink-0 text-zinc-600 hover:text-red-400 min-h-[44px] min-w-[44px] flex items-center justify-center">
+        <Trash2 size={14} />
+      </button>
     </div>
   )
 }

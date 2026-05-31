@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn, formatDate, API } from "@/lib/utils"
-import { QuickDatePicker } from "@/components/QuickDatePicker"
+import { DateInput } from "@/components/DateInput"
 import {
   CalendarClock, CreditCard, CalendarCheck, MessageCircle,
   FileText, MessageSquare, Circle, CheckCircle2,
@@ -87,6 +87,8 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
   const [newClientName, setNewClientName] = useState("")
   const [assigneeFilter, setAssigneeFilter] = useState<string>("all")
   const [showArchive, setShowArchive] = useState(false)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const LIMIT = 30
   const TASK_LABELS: Record<string, string> = {
     follow_up: "Фоллоу-ап", session: "Сессия", payment: "Оплата", contract: "Договор",
     schedule: "Запись", content: "Контент", feedback: "Обратная связь",
@@ -159,9 +161,10 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
   const tasks: TaskRow[] = Array.isArray(data?.tasks) ? data.tasks : []
 
   function getTaskAssignee(t: TaskRow): string {
-    if (t.responsible_person === "assistant") return "assistant"
-    if (t.responsible_person === "personal") return "personal"
-    // fallback: из source не вытащить, у нас нет source в задачах. По умолчанию Антон.
+    const rp = (t.responsible_person || "").toLowerCase()
+    if (rp === "assistant" || rp === "ассистент") return "assistant"
+    if (rp === "personal" || rp === "personal") return "personal"
+    // fallback: по умолчанию Антон
     return "personal"
   }
 
@@ -183,11 +186,19 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
   const overdue = filtered.filter((t) => t.due_date && t.due_date < TODAY)
   const today = filtered.filter((t) => t.due_date === TODAY)
   const future = filtered.filter((t) => !t.due_date || t.due_date > TODAY)
+  const futureSorted = useMemo(() => {
+    return [...future].sort((a, b) => {
+      if (!a.due_date && !b.due_date) return 0
+      if (!a.due_date) return 1
+      if (!b.due_date) return -1
+      return a.due_date.localeCompare(b.due_date)
+    })
+  }, [future])
 
   const columns = [
     { id: "overdue", label: "Просрочено", tasks: overdue, color: "bg-red-500", bg: "bg-red-950/10", border: "border-red-900/20", headerBg: "bg-red-950/20", headerText: "text-red-400" },
     { id: "today", label: "Сегодня", tasks: today, color: "bg-amber-500", bg: "bg-amber-950/10", border: "border-amber-900/20", headerBg: "bg-amber-950/20", headerText: "text-amber-400" },
-    { id: "future", label: "На будущее", tasks: future, color: "bg-blue-500", bg: "bg-blue-950/10", border: "border-blue-900/20", headerBg: "bg-blue-950/20", headerText: "text-blue-400" },
+    { id: "future", label: "На будущее", tasks: futureSorted, color: "bg-blue-500", bg: "bg-blue-950/10", border: "border-blue-900/20", headerBg: "bg-blue-950/20", headerText: "text-blue-400" },
   ]
 
   return (
@@ -245,7 +256,7 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
             ))}
           </div>
           {/* Deadline picker */}
-          <QuickDatePicker value={newDue} onChange={setNewDue} />
+          <DateInput value={newDue} onChange={setNewDue} showTime />
           {/* Description */}
           <input
             value={newDescription}
@@ -382,7 +393,15 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
                     {col.tasks.length === 0 && (
                       <div className="py-8 text-center text-xs text-zinc-600 italic">Нет задач</div>
                     )}
-                    {col.tasks.map((t) => <TaskCard key={t.id} task={t} columnId={col.id} showArchive={showArchive} onComplete={(id) => patchTask.mutate({ id, status: "completed" })} onRestore={(id) => patchTask.mutate({ id, status: "pending" })} onDelete={(id) => { if (confirm('Удалить задачу?')) deleteTask.mutate(id) }} onSelectClient={onSelectClient} />)}
+                    {col.tasks.slice(0, expanded[col.id] ? undefined : LIMIT).map((t) => <TaskCard key={t.id} task={t} columnId={col.id} showArchive={showArchive} onComplete={(id) => patchTask.mutate({ id, status: "completed" })} onRestore={(id) => patchTask.mutate({ id, status: "pending" })} onDelete={(id) => { if (confirm('Удалить задачу?')) deleteTask.mutate(id) }} onSelectClient={onSelectClient} />)}
+                    {col.tasks.length > LIMIT && !expanded[col.id] && (
+                      <button
+                        onClick={() => setExpanded((prev) => ({ ...prev, [col.id]: true }))}
+                        className="w-full py-2.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors rounded-lg hover:bg-zinc-800/30"
+                      >
+                        + {col.tasks.length - LIMIT} ещё
+                      </button>
+                    )}
                   </div>
                 </ScrollArea>
               </div>
@@ -406,7 +425,15 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
                   {col.tasks.length === 0 && (
                     <div className="py-6 text-center text-xs text-zinc-600 italic">Нет задач</div>
                   )}
-                  {col.tasks.map((t) => <TaskCard key={t.id} task={t} columnId={col.id} showArchive={showArchive} onComplete={(id) => patchTask.mutate({ id, status: "completed" })} onRestore={(id) => patchTask.mutate({ id, status: "pending" })} onDelete={(id) => { if (confirm('Удалить задачу?')) deleteTask.mutate(id) }} onSelectClient={onSelectClient} />)}
+                  {col.tasks.slice(0, expanded[col.id] ? undefined : LIMIT).map((t) => <TaskCard key={t.id} task={t} columnId={col.id} showArchive={showArchive} onComplete={(id) => patchTask.mutate({ id, status: "completed" })} onRestore={(id) => patchTask.mutate({ id, status: "pending" })} onDelete={(id) => { if (confirm('Удалить задачу?')) deleteTask.mutate(id) }} onSelectClient={onSelectClient} />)}
+                  {col.tasks.length > LIMIT && !expanded[col.id] && (
+                    <button
+                      onClick={() => setExpanded((prev) => ({ ...prev, [col.id]: true }))}
+                      className="w-full py-2.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors rounded-lg hover:bg-zinc-800/30"
+                    >
+                      + {col.tasks.length - LIMIT} ещё
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -436,8 +463,8 @@ function TaskCard({ task, columnId, showArchive, onComplete, onRestore, onDelete
     : { bg: "bg-blue-950/10", border: "border-blue-900/20" }
 
   return (
-    <div className={cn("p-3 rounded-lg border transition-colors", colInfo.bg, colInfo.border, "hover:bg-zinc-800/30")}>
-      <div className="flex items-start gap-2">
+    <div className={cn("p-4 rounded-xl border transition-colors", colInfo.bg, colInfo.border, "hover:bg-zinc-800/30")}>
+      <div className="flex items-start gap-3">
         {showArchive ? (
           <span className="mt-0.5 shrink-0 text-emerald-600 min-h-[44px] min-w-[44px] flex items-center justify-center">
             <CheckCircle2 size={16} />
@@ -451,32 +478,32 @@ function TaskCard({ task, columnId, showArchive, onComplete, onRestore, onDelete
           </button>
         )}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <span className={info.color}>{Icon}</span>
             <span className={cn(
-              "text-sm truncate font-medium",
+              "text-sm font-semibold leading-snug",
               showArchive ? "text-zinc-500" : "text-zinc-200"
             )}>
               {task.title}
             </span>
           </div>
-          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <div className="flex items-center gap-3 mt-2 flex-wrap">
             {task.client_name && (
               <span
-                className="text-[11px] text-zinc-500 hover:text-blue-400 cursor-pointer truncate min-h-[28px] flex items-center touch-manipulation"
+                className="text-xs text-zinc-400 hover:text-blue-400 cursor-pointer truncate min-h-[28px] flex items-center touch-manipulation"
                 onClick={(e) => { e.stopPropagation(); task.client_id && onSelectClient(task.client_id) }}
               >
                 {task.client_name}
               </span>
             )}
             {task.due_date && (
-              <span className={cn("text-[10px]", columnId === "overdue" ? "text-red-400" : "text-zinc-600")}>
+              <span className={cn("text-xs", columnId === "overdue" ? "text-red-400" : "text-zinc-500")}>
                 {formatTaskDue(task.due_date)}
               </span>
             )}
           </div>
           {task.description && (
-            <p className="text-[11px] text-zinc-600 mt-1.5 leading-relaxed">{task.description}</p>
+            <p className="text-sm text-zinc-500 mt-2 leading-relaxed">{task.description}</p>
           )}
         </div>
         {showArchive && (

@@ -4,6 +4,19 @@ import FemaleTestDashboard from "./FemaleTestDashboard"
 import QuizMensDashboard from "./QuizMensDashboard"
 import { ClientSheet } from "@/components/ClientSheet"
 
+function scrollAndHighlight(testId: number) {
+  try {
+    const el = document.querySelector(`[data-test-id="${testId}"]`)
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" })
+      el.classList.add("ring-2", "ring-emerald-500", "bg-emerald-900/20", "rounded-lg")
+      setTimeout(() => {
+        el.classList.remove("ring-2", "ring-emerald-500", "bg-emerald-900/20")
+      }, 3000)
+    }
+  } catch {}
+}
+
 function useURLTab(key: string, fallback: string): [string, (v: string) => void] {
   const get = () => {
     const p = new URLSearchParams(window.location.search)
@@ -24,9 +37,37 @@ function useURLTab(key: string, fallback: string): [string, (v: string) => void]
   return [tab, setTab]
 }
 
-export default function QuizDashboard() {
+interface QuizDashboardProps {
+  highlightTestId?: number | null
+  onTestHighlighted?: () => void
+}
+
+export default function QuizDashboard({ highlightTestId, onTestHighlighted }: QuizDashboardProps) {
   const [tab, setTab] = useURLTab("test", "female")
   const [sheetClientId, setSheetClientId] = useState<number | null>(null)
+  const [highlightId, setHighlightId] = useState<number | null>(null)
+
+  // Tab sync: если пришёл highlightTestId, переключаем таб и ждём рендера
+  useEffect(() => {
+    if (highlightTestId) {
+      setHighlightId(highlightTestId)
+      // По данным из бэка определим таб: female test has female prefix, mens has male prefix
+      // Пока просто скроллим через 500ms после рендера
+      const timer = setTimeout(() => {
+        scrollAndHighlight(highlightTestId)
+      }, 500)
+      return () => clearTimeout(timer)
+    }
+  }, [highlightTestId])
+
+  // Реальный скролл к data-test-id
+  useEffect(() => {
+    if (!highlightId) return
+    const timer = setTimeout(() => {
+      scrollAndHighlight(highlightId)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [highlightId, tab])
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-8">

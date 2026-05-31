@@ -11,14 +11,11 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
-import {
-  ScrollArea,
-} from "@/components/ui/scroll-area"
 import { Skeleton } from "@/components/ui/skeleton"
 import { formatDate, formatTime, getStatusStyle, cn, displayNick } from "@/lib/utils"
 import { authFetch, API } from "@/hooks/use-api"
 import { TasksWidget } from "./TasksWidget"
-import { QuickDatePicker } from "./QuickDatePicker"
+import { DateInput } from "./DateInput"
 import { useSheetContext } from "@/hooks/use-sheet-context"
 import {
   Loader2, Send, StickyNote, UserPlus, X,
@@ -475,9 +472,10 @@ function ChatBubble({ item, onTranscribe, clientId, editingTaskId, setEditingTas
                   ))}
                 </div>
                 <div className="flex items-center gap-2">
-                  <QuickDatePicker
+                  <DateInput
                     value={item._dueDate || ""}
                     onChange={(iso) => saveEdit({ due_date: iso })}
+                    placeholder="ДД.ММ.ГГГГ" className="w-28"
                   />
                   <textarea
                     defaultValue={item._description || ""}
@@ -758,23 +756,35 @@ function TestResultCard({ test }: { test: any }) {
   const isFemale = test.test_type === "female"
   const title = isFemale ? "Шкала Шумкина" : "Мужской тест"
   const dateStr = formatDate(test.created_at)
+  const testId = test.id
+
+  const handleOpenTest = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    window.open(`/api/quiz/results/${testId}/download`, "_blank")
+  }
 
   return (
-    <div className="p-3 rounded-lg bg-zinc-900 border border-zinc-800 space-y-1.5">
+    <div className="p-4 rounded-xl bg-zinc-900 border border-zinc-800 space-y-2.5 cursor-pointer hover:bg-zinc-800/50 transition-colors min-w-0 break-words"
+      onClick={handleOpenTest}
+      data-test-id={testId}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === "Enter") handleOpenTest(e) }}
+    >
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-zinc-300">{title}</span>
-        <span className="text-[10px] text-zinc-600">{dateStr}</span>
+        <span className="text-sm font-semibold text-zinc-200">{title}</span>
+        <span className="text-[11px] text-zinc-500">{dateStr}</span>
       </div>
-      <div className="flex justify-between text-[11px] text-zinc-400">
-        <span>Свобода</span>
-        <span className="text-zinc-200 font-medium">{test.freedom_score}/40</span>
+      <div className="flex justify-between items-center py-1">
+        <span className="text-xs text-zinc-300">Свобода</span>
+        <span className="text-xs font-semibold text-white">{test.freedom_score}/40</span>
       </div>
-      <div className="flex justify-between text-[11px] text-zinc-400">
-        <span>{isFemale ? "Раскрепощённость" : "Сексуальность"}</span>
-        <span className="text-zinc-200 font-medium">{test.sexuality_score}/60</span>
+      <div className="flex justify-between items-center py-1">
+        <span className="text-xs text-zinc-300">{isFemale ? "Раскрепощённость" : "Сексуальность"}</span>
+        <span className="text-xs font-semibold text-white">{test.sexuality_score}/60</span>
       </div>
       {test.diagnosis && (
-        <p className="text-[10px] text-purple-400 mt-0.5 leading-tight break-words">{test.diagnosis}</p>
+        <p className="text-xs text-purple-300 leading-relaxed break-words">{test.diagnosis}</p>
       )}
     </div>
   )
@@ -797,6 +807,7 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
   const [taskDescription, setTaskDescription] = useState("")
   const [editingTaskId, setEditingTaskId] = useState<number | null>(null)
   const [showNewDeal, setShowNewDeal] = useState(false)
+  const [mobileInfoOpen, setMobileInfoOpen] = useState(false)
   const [newDealTitle, setNewDealTitle] = useState("")
   const [newDealAmount, setNewDealAmount] = useState("")
   const [newDealStatus, setNewDealStatus] = useState("Ожидает")
@@ -1103,6 +1114,7 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
       title: newDealTitle.trim(),
       client_id: clientId,
       amount: parseFloat(newDealAmount) || 0,
+      paid: 0,
       status: newDealStatus,
       purchase_date: newDealDate,
     })
@@ -1187,12 +1199,13 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
 
             {/* Mobile: editable meta section */}
             <div className="md:hidden px-5 py-2 border-b border-zinc-800/30">
-              <details className="group">
-                <summary className="text-[10px] text-zinc-600 uppercase tracking-wider font-medium cursor-pointer list-none flex items-center gap-1.5 min-h-[36px] touch-manipulation">
-                  <span className="group-open:rotate-90 transition-transform">▶</span>
-                  Информация о клиенте
-                </summary>
-                <div className="mt-2 space-y-3">
+              <button onClick={() => setMobileInfoOpen(!mobileInfoOpen)}
+                className="text-[10px] text-zinc-600 uppercase tracking-wider font-medium cursor-pointer list-none flex items-center gap-1.5 min-h-[36px] touch-manipulation w-full">
+                <span className={`transition-transform ${mobileInfoOpen ? "rotate-90" : ""}`}>{">"}</span>
+                Информация о клиенте
+              </button>
+              {mobileInfoOpen && (
+                <div className="mt-2 space-y-3 max-h-[60vh] overflow-y-auto overflow-x-hidden pr-1">
                   <Select value={c.status} onValueChange={(v) => patchClient.mutate({ status: v })}>
                     <SelectTrigger className="h-8 text-xs bg-zinc-900 border-zinc-800">
                       <SelectValue />
@@ -1219,20 +1232,70 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                     </div>
                   )}
                   <Separator className="bg-zinc-800/30" />
-                  {data?.deals?.length > 0 && (
-                    <div>
-                      <p className="text-[10px] text-zinc-600 font-medium mb-1">Сделки</p>
-                      {data.deals.map((d: any, i: number) => (
-                        <div key={i} className="flex items-center justify-between text-xs py-0.5">
-                          <span className="text-zinc-300 truncate">{d.title}</span>
-                          <span className="text-zinc-200 ml-2">{d.amount?.toLocaleString()}₽</span>
-                        </div>
-                      ))}
+                  {/* Mobile deals — кликабельные + добавление */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium">Сделки</p>
+                      <button onClick={(e) => { e.stopPropagation(); setShowNewDeal(true) }}
+                        className="text-[10px] text-emerald-500 hover:text-emerald-400 min-h-[32px] min-w-[32px] flex items-center justify-center touch-manipulation">
+                        <Plus size={14} />
+                      </button>
                     </div>
-                  )}
+                    {data?.deals?.map((d: any, i: number) => (
+                      <div key={i}
+                        onClick={() => {
+                          window.dispatchEvent(new CustomEvent("open-deal", { detail: d.id }))
+                          onClose()
+                        }}
+                        className="flex items-center justify-between text-xs py-1.5 cursor-pointer hover:bg-zinc-800/30 rounded px-1 transition-colors touch-manipulation">
+                        <span className="text-zinc-300 truncate">{d.title}</span>
+                        <span className="text-zinc-200 ml-2 shrink-0">{d.amount?.toLocaleString()}</span>
+                      </div>
+                    ))}
+                    {data?.deals?.length > 1 && (
+                      <div className="flex items-center justify-between text-xs pt-1 border-t border-zinc-800/30 mt-1">
+                        <span className="text-zinc-500">LTV</span>
+                        <span className="text-emerald-400 font-semibold">
+                          {data.deals.reduce((s: number, d: any) => s + (d.amount || 0), 0).toLocaleString()}rub
+                        </span>
+                      </div>
+                    )}
+                    {/* New deal form (mobile) */}
+                    {showNewDeal && (
+                      <div className="mt-2 p-2 rounded-lg bg-zinc-900 border border-zinc-700 space-y-2" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-2">
+                          <input autoFocus value={newDealTitle} onChange={(e) => setNewDealTitle(e.target.value)}
+                            placeholder="Название сделки..."
+                            className="flex-1 h-8 px-2 text-xs rounded bg-zinc-950 border border-zinc-800 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-600"
+                            onKeyDown={(e) => { if (e.key === "Escape") setShowNewDeal(false) }}
+                          />
+                          <button onClick={() => setShowNewDeal(false)}
+                            className="text-zinc-600 hover:text-zinc-300 min-h-[32px] min-w-[32px] flex items-center justify-center">
+                            <X size={16} />
+                          </button>
+                        </div>
+                        <div className="flex gap-2 flex-wrap min-w-0">
+                          <input type="number" value={newDealAmount} onChange={(e) => setNewDealAmount(e.target.value)}
+                            placeholder="Сумма" className="w-20 h-8 px-2 text-xs rounded bg-zinc-950 border border-zinc-800 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-600" />
+                          <select value={newDealStatus} onChange={(e) => setNewDealStatus(e.target.value)}
+                            className="h-8 px-2 text-xs rounded bg-zinc-950 border border-zinc-800 text-zinc-200 focus:outline-none focus:border-zinc-600">
+                            <option value="Ожидает">Ожидает</option>
+                            <option value="В процессе">В процессе</option>
+                            <option value="Оплачено">Оплачено</option>
+                            <option value="Возврат">Возврат</option>
+                          </select>
+                          <DateInput value={newDealDate} onChange={setNewDealDate} placeholder="ДД.ММ.ГГГГ" className="w-28" />
+                          <button onClick={handleCreateDeal} disabled={!newDealTitle.trim() || createDeal.isPending}
+                            className="h-8 px-3 text-xs bg-emerald-700 hover:bg-emerald-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded transition-colors">
+                            {createDeal.isPending ? "..." : "Create"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   {data?.test_results?.length > 0 && (
                     <div>
-                      <p className="text-[10px] text-zinc-600 font-medium mb-2">Результаты тестов</p>
+                      <p className="text-[10px] text-zinc-600 font-medium mb-2">Results</p>
                       <div className="space-y-2">
                         {data.test_results.map((t: any, i: number) => (
                           <TestResultCard key={i} test={t} />
@@ -1240,9 +1303,13 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                       </div>
                     </div>
                   )}
+                  {/* Mobile tags */}
+                  <Separator className="bg-zinc-800/30" />
+                  <TagsWidget clientId={clientId} />
+
                   {timelineEvents.length > 0 && (
                     <div>
-                      <p className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium mb-2">События</p>
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium mb-2">Events</p>
                       <div className="space-y-2">
                         {timelineEvents.map((e, i) => (
                           <div key={i} className="flex items-start gap-2 text-xs">
@@ -1261,15 +1328,15 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                     </div>
                   )}
                 </div>
-              </details>
+              )}
             </div>
 
             {/* Split layout */}
             <div className="flex flex-1 overflow-hidden">
               {/* ── Left: Meta (30%) — скрыто на мобилке ──────────── */}
-              <div className="hidden md:flex md:w-[30%] border-r border-zinc-800/50 flex-col min-w-0">
-                <ScrollArea className="flex-1 px-5 py-4">
-                  <div className="space-y-5 min-w-0">
+              <div className="hidden md:flex md:w-[30%] border-r border-zinc-800/50 flex-col min-w-0 min-h-0" style={{maxWidth: '30%', width: '30%'}}>
+                <div className="flex-1 px-5 py-4 overflow-y-auto overflow-x-hidden" style={{maxWidth: '100%'}}>
+                  <div className="space-y-5 w-full min-w-0 break-words" style={{tableLayout: 'fixed', width: '100%'}}>
                     {/* Status */}
                     <div className="space-y-1.5">
                       <label className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium">Статус</label>
@@ -1344,7 +1411,13 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                       {data?.deals?.length > 0 && (
                         <div className="space-y-2">
                           {data.deals.map((d: any, i: number) => (
-                            <div key={i} className="flex items-center justify-between text-xs">
+                            <div key={i}
+                              className="flex items-center justify-between text-xs py-0.5 cursor-pointer hover:bg-zinc-800/30 rounded px-1 transition-colors"
+                              onClick={() => {
+                                window.dispatchEvent(new CustomEvent("open-deal", { detail: d.id }))
+                                onClose()
+                              }}
+                            >
                               <div className="flex items-center gap-2 min-w-0">
                                 <ShoppingCart size={11} className="text-emerald-400 shrink-0" />
                                 <span className="text-zinc-300 truncate">{d.title}</span>
@@ -1406,10 +1479,7 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                               <option value="Оплачено">Оплачено</option>
                               <option value="Возврат">Возврат</option>
                             </select>
-                            <QuickDatePicker
-                              value={newDealDate}
-                              onChange={setNewDealDate}
-                            />
+                            <DateInput value={newDealDate} onChange={setNewDealDate} placeholder="ДД.ММ.ГГГГ" className="w-28" />
                             <button
                               onClick={handleCreateDeal}
                               disabled={!newDealTitle.trim() || createDeal.isPending}
@@ -1462,7 +1532,7 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                       </>
                     )}
                   </div>
-                </ScrollArea>
+                </div>
               </div>
 
               {/* ── Right: Tabs — 100% на мобилке, 70% на десктопе ── */}
@@ -1492,12 +1562,16 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
 
                   {/* ── Tab: Заметки ───────────────────────────── */}
                   <TabsContent value="notes" className="flex-1 flex flex-col min-h-0 mt-0 data-[state=inactive]:hidden">
-                    {c?.next_step && (
-                      <div className="px-5 py-2.5 bg-zinc-900/50 border-b border-zinc-800/30 shrink-0">
-                        <p className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium mb-0.5">След. шаг</p>
-                        <p className="text-xs text-zinc-300">{c.next_step}</p>
-                      </div>
-                    )}
+                    {/* Next step — редактируемое поле */}
+                    <div className="px-5 py-2.5 bg-zinc-900/50 border-b border-zinc-800/30 shrink-0">
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium mb-1">След. шаг</p>
+                      <input
+                        defaultValue={c?.next_step || ""}
+                        onBlur={(e) => { if (e.target.value !== (c?.next_step || "")) patchClient.mutate({ next_step: e.target.value }) }}
+                        className="w-full h-9 px-3 text-xs rounded-md bg-zinc-950 border border-zinc-800 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 touch-manipulation"
+                        placeholder="Укажите следующий шаг..."
+                      />
+                    </div>
                     <MessagesList
                       items={notesItems}
                       emptyText="Нет заметок"
@@ -1623,7 +1697,7 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                               </button>
                             ))}
                           </div>
-                          <QuickDatePicker value={taskDue} onChange={setTaskDue} />
+                          <DateInput value={taskDue} onChange={setTaskDue} showTime />
                           <input
                             value={taskDescription}
                             onChange={(e) => setTaskDescription(e.target.value)}
@@ -1677,6 +1751,13 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                       </div>
                     </>
                   )}
+                </div>
+
+                {/* ── Close button ─────────────────────────────── */}
+                <div className="sticky bottom-0 bg-zinc-950 pt-3 pb-4 px-5 border-t border-zinc-800/50 shrink-0">
+                  <Button onClick={onClose} className="w-full gap-2" size="sm">
+                    <CheckCircle2 size={16} />Готово
+                  </Button>
                 </div>
               </div>
             </div>
@@ -1742,6 +1823,75 @@ const TAG_PRESET_COLORS = [
   "#14b8a6", "#8b5cf6",
 ]
 
+// ─── Tag badge with inline edit ────────────────────────────────────────────────
+function TagBadge({ tag, onRemove, clientId: cid }: { tag: { id: number; name: string; color: string }; onRemove: () => void; clientId?: number }) {
+  const [editing, setEditing] = useState(false)
+  const [editName, setEditName] = useState(tag.name)
+  const [editColor, setEditColor] = useState(tag.color)
+  const queryClient = useQueryClient()
+
+  useEffect(() => { setEditName(tag.name); setEditColor(tag.color) }, [tag.name, tag.color])
+
+  const save = () => {
+    if (editName.trim() && (editName !== tag.name || editColor !== tag.color)) {
+      // Оптимистичное обновление — сразу меняем кэш
+      const prev = queryClient.getQueryData<any>(["client", cid])
+      if (prev) {
+        queryClient.setQueryData(["client", cid], {
+          ...prev,
+          tags: (prev.tags || []).map((t: any) =>
+            t.id === tag.id ? { ...t, name: editName.trim(), color: editColor } : t
+          ),
+        })
+      }
+      // PATCH на сервер — в фоне
+      authFetch(`${API}/api/tags/${tag.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editName.trim(), color: editColor }),
+      }).then(() => {
+        if (cid) queryClient.invalidateQueries({ queryKey: ["client", cid] })
+        queryClient.invalidateQueries({ queryKey: ["tags"] })
+      }).catch(() => {
+        if (cid) queryClient.invalidateQueries({ queryKey: ["client", cid] })
+      })
+    }
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div className="flex flex-col gap-1.5 p-2 rounded-lg bg-zinc-800/80 border border-zinc-700 w-full" onClick={(e) => e.stopPropagation()}>
+        <input value={editName} onChange={(e) => setEditName(e.target.value)}
+          className="w-full h-8 px-2 text-xs rounded bg-zinc-950 border border-zinc-700 text-zinc-200 outline-none"
+          autoFocus onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false) }}
+          onBlur={save}
+        />
+        <div className="flex flex-wrap gap-1">
+          {["#22c55e","#6366f1","#eab308","#ef4444","#a855f7","#06b6d4","#f97316","#ec4899","#14b8a6","#8b5cf6"].map((c) => (
+            <button key={c} onClick={() => setEditColor(c)}
+              className={`w-5 h-5 rounded-full ${editColor === c ? "ring-2 ring-white" : ""}`}
+              style={{ backgroundColor: c }}
+            />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium cursor-pointer hover:opacity-80 transition-opacity"
+      style={{ backgroundColor: tag.color + "33", color: tag.color }}
+      onClick={() => setEditing(true)}
+    >
+      {tag.name}
+      <button onClick={(e) => { e.stopPropagation(); onRemove() }}
+        className="hover:opacity-70 text-current ml-0.5">&times;</button>
+    </span>
+  )
+}
+
 function TagsWidget({ clientId }: { clientId: number }) {
   const queryClient = useQueryClient()
   const [adding, setAdding] = useState(false)
@@ -1760,11 +1910,14 @@ function TagsWidget({ clientId }: { clientId: number }) {
     },
   })
 
-  // Client tags — pulled from the main client query
-  const clientTags: { id: number; name: string; color: string }[] = useMemo(() => {
-    const raw = queryClient.getQueryData<any>(["client", clientId])
-    return raw?.tags || []
-  }, [queryClient, clientId])
+  // Client tags — через useQuery чтобы подписаться на изменения кэша
+  const { data: _clientData } = useQuery({
+    queryKey: ["client", clientId],
+    queryFn: () => authFetch(`${API}/api/clients/${clientId}`).then((r) => r.json()),
+    staleTime: 30_000,
+    enabled: !!clientId,
+  })
+  const clientTags: { id: number; name: string; color: string }[] = _clientData?.tags || []
 
   const addMutation = useMutation({
     mutationFn: async (tagId: number) => {
@@ -1774,7 +1927,34 @@ function TagsWidget({ clientId }: { clientId: number }) {
         body: JSON.stringify({ tag_id: tagId }),
       })
     },
-    onSuccess: () => {
+    onMutate: async (tagId) => {
+      await queryClient.cancelQueries({ queryKey: ["client", clientId] })
+      const prev = queryClient.getQueryData<any>(["client", clientId])
+      if (prev) {
+        const tag = allTags?.find((t: any) => t.id === tagId)
+        if (tag) {
+          const newTag = { id: tag.id, name: tag.name, color: tag.color }
+          queryClient.setQueryData(["client", clientId], {
+            ...prev, tags: [...(prev.tags || []), newTag]
+          })
+          // Обновить в списке клиентов (воронка)
+          queryClient.setQueriesData({ queryKey: ["clients"] }, (old: any) => {
+            if (!old?.clients) return old
+            return {
+              ...old,
+              clients: old.clients.map((c: any) =>
+                c.id === clientId ? { ...c, tags: [...(c.tags || []), newTag] } : c
+              ),
+            }
+          })
+        }
+      }
+      return { prev }
+    },
+    onError: (_, __, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(["client", clientId], ctx.prev)
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["client", clientId] })
       queryClient.invalidateQueries({ queryKey: ["tags"] })
     },
@@ -1784,7 +1964,30 @@ function TagsWidget({ clientId }: { clientId: number }) {
     mutationFn: async (tagId: number) => {
       await authFetch(`${API}/api/clients/${clientId}/tags/${tagId}`, { method: "DELETE" })
     },
-    onSuccess: () => {
+    onMutate: async (tagId) => {
+      await queryClient.cancelQueries({ queryKey: ["client", clientId] })
+      const prev = queryClient.getQueryData<any>(["client", clientId])
+      if (prev) {
+        queryClient.setQueryData(["client", clientId], {
+          ...prev, tags: (prev.tags || []).filter((t: any) => t.id !== tagId)
+        })
+        // Удалить из списка клиентов (воронка)
+        queryClient.setQueriesData({ queryKey: ["clients"] }, (old: any) => {
+          if (!old?.clients) return old
+          return {
+            ...old,
+            clients: old.clients.map((c: any) =>
+              c.id === clientId ? { ...c, tags: (c.tags || []).filter((t: any) => t.id !== tagId) } : c
+            ),
+          }
+        })
+      }
+      return { prev }
+    },
+    onError: (_, __, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(["client", clientId], ctx.prev)
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["client", clientId] })
       queryClient.invalidateQueries({ queryKey: ["tags"] })
     },
@@ -1803,6 +2006,7 @@ function TagsWidget({ clientId }: { clientId: number }) {
       if (data?.tag?.id) {
         addMutation.mutate(data.tag.id)
       }
+      queryClient.invalidateQueries({ queryKey: ["client", clientId] })
       queryClient.invalidateQueries({ queryKey: ["tags"] })
     },
   })
@@ -1833,29 +2037,19 @@ function TagsWidget({ clientId }: { clientId: number }) {
         <p className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium">Теги</p>
         <button
           onClick={(e) => { e.stopPropagation(); setAdding(!adding); setShowCreate(false); setInput("") }}
-          className="text-[10px] text-zinc-500 hover:text-white transition-colors min-h-[32px] min-w-[32px] flex items-center justify-center touch-manipulation"
+          className="text-zinc-500 hover:text-emerald-400 transition-colors min-h-[36px] min-w-[36px] flex items-center justify-center touch-manipulation"
         >
-          {adding ? "Отмена" : "+"}
+          {adding ? <X size={16} /> : <Plus size={16} />}
         </button>
       </div>
       <div className="flex flex-wrap gap-1.5">
         {clientTags.map((tag) => (
-          <span
+          <TagBadge
             key={tag.id}
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
-            style={{
-              backgroundColor: tag.color + "33",
-              color: tag.color,
-            }}
-          >
-            {tag.name}
-            <button
-              onClick={(e) => { e.stopPropagation(); removeMutation.mutate(tag.id) }}
-              className="hover:opacity-70"
-            >
-              &times;
-            </button>
-          </span>
+            tag={tag}
+            clientId={clientId}
+            onRemove={() => removeMutation.mutate(tag.id)}
+          />
         ))}
         {adding && !showCreate && (
           <div className="relative w-full mt-1">

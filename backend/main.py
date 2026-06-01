@@ -1402,9 +1402,19 @@ async def receive_message(msg: IncomingMessage):
                 client_id = row["id"]
 
     if not client_id:
-        conn.close()
-        logger.info("Message from unknown user %s, ignored", msg.telegram_username or msg.telegram_id)
-        return {"ok": True, "ignored": True}
+        if not msg.telegram_id:
+            conn.close()
+            logger.info("Message from unknown user without telegram_id, ignored")
+            return {"ok": True, "ignored": True}
+        # Создаём нового клиента для незнакомого telegram_id
+        name = msg.telegram_username.lstrip("@") if msg.telegram_username else msg.telegram_id
+        conn.execute(
+            "INSERT INTO clients (name, telegram_nick, telegram_id, status, source, last_contact, created_at) "
+            "VALUES (?, ?, ?, 'Выдать контент', 'Личка', datetime('now'), datetime('now'))",
+            (name, msg.telegram_username.lstrip("@") if msg.telegram_username else "", msg.telegram_id),
+        )
+        client_id = conn.lastrowid
+        logger.info("Created client %s for unknown user %s", client_id, msg.telegram_username or msg.telegram_id)
 
     conn.execute(
         "INSERT INTO telegram_messages (client_id, telegram_id, sender_type, text, account, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
@@ -1542,6 +1552,16 @@ async def create_client(data: ClientCreate):
         if dup:
             conn.close()
             return {"ok": True, "duplicate": True, "existing_id": dup["id"], "existing_name": dup["name"], "match_by": "telegram"}
+
+    # Duplicate check by telegram_id
+    if data.telegram_id:
+        dup = conn.execute(
+            "SELECT id, name FROM clients WHERE telegram_id = ? AND telegram_id != '' LIMIT 1",
+            (data.telegram_id,),
+        ).fetchone()
+        if dup:
+            conn.close()
+            return {"ok": True, "duplicate": True, "existing_id": dup["id"], "existing_name": dup["name"], "match_by": "telegram_id"}
 
     notion_id = None
     try:
@@ -4081,6 +4101,18 @@ async def mira_reorder_assistant_tasks(data: AssistantTaskReorder):
 @app.get("/api/mira/assistant-tasks/statuses")
 async def mira_assistant_task_statuses():
     return {"ok": True, "statuses": ASSISTANT_TASK_STATUSES}
+
+@app.get("/api/mira/stats")
+async def mira_stats():
+    """Статистика для Миры: клиенты без активных задач по статусам."""
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT c.status, COUNT(*) as total, "
+        "SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM tasks t WHERE t.client_id = c.id AND t.status = 'pending') THEN 1 ELSE 0 END) as without_pending "
+        "FROM clients c WHERE (c.archived IS NULL OR c.archived = 0) GROUP BY c.status ORDER BY total DESC"
+    ).fetchall()
+    conn.close()
+    return {"ok": True, "stats": [_row(r) for r in rows]}
 
 # ─── Mira API: Задачи по клиентам (tasks) ──────────────────────────────────────
 

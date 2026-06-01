@@ -533,6 +533,16 @@ export function Funnel({ onSelect }: FunnelProps) {
         })
         return
       }
+      // "Выдать контент" — новые (без last_contact) сверху, потом по убыванию
+      if (s === "Выдать контент") {
+        map[s].sort((a, b) => {
+          if (!a.last_contact && !b.last_contact) return 0
+          if (!a.last_contact) return -1
+          if (!b.last_contact) return 1
+          return b.last_contact.localeCompare(a.last_contact)
+        })
+        return
+      }
       const savedIds = loadOrder(s)
       if (savedIds.length > 0) {
         const sorted: Client[] = []

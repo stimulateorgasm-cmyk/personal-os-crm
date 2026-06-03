@@ -171,7 +171,8 @@ export function DateInput({
 
   // ─── Calendar / Time popover state ─────────────────────
 
-  const defDate = value ? new Date((datePart(value) || "2026") + "T12:00:00") : new Date()
+  const rawDate = value ? new Date((datePart(value) || "2026") + "T12:00:00") : new Date()
+  const defDate = isNaN(rawDate.getTime()) ? new Date() : rawDate
   const [calYear, setCalYear] = useState(defDate.getFullYear())
   const [calMonth, setCalMonth] = useState(defDate.getMonth())
   const [selectingTime, setSelectingTime] = useState(false)
@@ -251,10 +252,10 @@ export function DateInput({
   const now = new Date()
   const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate()
   const firstDayOfWeek = new Date(calYear, calMonth, 1).getDay()
-  const startOffset = firstDayOfWeek === 0 ? 6 : firstDayOfWeek - 1
+  const startOffset = Math.max(0, firstDayOfWeek === 0 ? 6 : firstDayOfWeek - 1)
   const todayStr = now.toDateString()
 
-  const days: (number | null)[] = Array(startOffset).fill(null)
+  const days: (number | null)[] = Array(Math.max(1, startOffset)).fill(null)
   for (let d = 1; d <= daysInMonth; d++) days.push(d)
 
   // ─── Presets (only in showTime mode) ────────────────────

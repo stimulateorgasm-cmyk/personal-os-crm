@@ -182,7 +182,7 @@ export function DealsList({ onSelect, highlightDealId, onDealHighlighted }: Deal
 
   const deals: Deal[] = Array.isArray(data?.deals) ? data.deals : []
   const total = typeof data?.total === "number" ? data.total : 0
-  const pages = Math.ceil(total / LIMIT)
+  const pages = Math.ceil(Math.max(0, total) / LIMIT) || 1
   const currentPage = Math.floor(offset / LIMIT) + 1
 
   const filtered = useMemo(() => {
@@ -503,9 +503,9 @@ function CalendarGrid({ onSelect, onClose }: { onSelect: (d: string) => void; on
   const [month, setMonth] = useState(now.getMonth())
   const daysInMonth = new Date(year, month + 1, 0).getDate()
   const firstDay = new Date(year, month, 1).getDay()
-  const startOffset = firstDay === 0 ? 6 : firstDay - 1
+  const startOffset = Math.max(0, firstDay === 0 ? 6 : firstDay - 1)
   const todayStr = now.toDateString()
-  const days: (number | null)[] = Array(startOffset).fill(null)
+  const days: (number | null)[] = Array(Math.max(1, startOffset)).fill(null)
   for (let d = 1; d <= daysInMonth; d++) days.push(d)
 
   return (

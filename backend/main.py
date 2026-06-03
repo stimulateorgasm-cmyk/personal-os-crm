@@ -170,11 +170,19 @@ def _scalar(r):
 JWT_SECRET = hashlib.sha256((NOTIFY_BOT_TOKEN or "").encode()).hexdigest()
 JWT_ALGO = "HS256"
 
-ALLOWED_CHAT_IDS = {
-    int(os.environ.get("ANTON_CHAT_ID", "0")),
-    int(os.environ.get("ASSISTANT_CHAT_ID", "0")),
-    int(os.environ.get("TONYROAR_CHAT_ID", "0")),
-}
+ALLOWED_CHAT_IDS = set()
+raw_ids = os.environ.get("ALLOWED_CHAT_IDS", "")
+if raw_ids:
+    for x in raw_ids.split(","):
+        x = x.strip()
+        if x.isdigit():
+            ALLOWED_CHAT_IDS.add(int(x))
+else:
+    # fallback на старые переменные
+    for k in ("ANTON_CHAT_ID", "ASSISTANT_CHAT_ID", "TONYROAR_CHAT_ID", "ANDREY_CHAT_ID"):
+        v = os.environ.get(k, "").strip()
+        if v.isdigit():
+            ALLOWED_CHAT_IDS.add(int(v))
 
 
 def _verify_telegram_login(data: dict) -> int | None:
@@ -1218,7 +1226,7 @@ async def list_all_tasks(status: Optional[str] = Query(None), due_date: Optional
         params.append(due_date)
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY tasks.created_at DESC LIMIT 200"
+    sql += " ORDER BY tasks.created_at DESC LIMIT 500"
     rows = conn.execute(sql, params).fetchall()
     conn.close()
     return {"tasks": [_row(r) for r in rows]}

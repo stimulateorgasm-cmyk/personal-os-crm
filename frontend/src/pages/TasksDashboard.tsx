@@ -183,9 +183,23 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
     })
   }, [tasks, search, assigneeFilter, showArchive])
 
-  const overdue = filtered.filter((t) => t.due_date && t.due_date < TODAY)
-  const today = filtered.filter((t) => t.due_date === TODAY)
-  const future = filtered.filter((t) => !t.due_date || t.due_date > TODAY)
+  const nowMsk = new Date()
+  const mskOffset = 3 * 60  // MSK = UTC+3
+  const mskNow = new Date(nowMsk.getTime() + mskOffset * 60 * 1000)
+  const TODAY_MSK = mskNow.toISOString().slice(0, 10)
+  const NOW_MSK = mskNow.toISOString().slice(0, 16).replace("T", " ")
+  const overdue = filtered.filter((t) => t.due_date && (
+    t.due_date.slice(0, 10) < TODAY_MSK ||
+    (t.due_date.slice(0, 10) === TODAY_MSK && t.due_date.slice(11) && t.due_date < NOW_MSK)
+  ))
+  const today = filtered.filter((t) => {
+    if (!t.due_date) return false
+    const dateOnly = t.due_date.slice(0, 10)
+    if (dateOnly !== TODAY_MSK) return false
+    if (t.due_date.length > 10 && t.due_date < NOW_MSK) return false
+    return true
+  })
+  const future = filtered.filter((t) => !t.due_date || t.due_date.slice(0, 10) > TODAY_MSK)
   const futureSorted = useMemo(() => {
     return [...future].sort((a, b) => {
       if (!a.due_date && !b.due_date) return 0

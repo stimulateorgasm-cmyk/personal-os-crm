@@ -217,7 +217,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("crm")
 
 app = FastAPI(title="Personal OS CRM")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+raw_origins = os.environ.get("ALLOWED_ORIGINS", "")
+cors_origins = [o.strip() for o in raw_origins.split(",") if o.strip()] if raw_origins else ["*"]
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
 
 
 # ─── Database ─────────────────────────────────────────────────────────────────

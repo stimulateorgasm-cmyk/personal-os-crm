@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 
 interface InlineEditProps {
   value: string
@@ -12,6 +12,7 @@ interface InlineEditProps {
 export function InlineEdit({ value, onSave, placeholder = "—", type = "text", className = "", linkify }: InlineEditProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(value)
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -22,11 +23,25 @@ export function InlineEdit({ value, onSave, placeholder = "—", type = "text", 
     }
   }, [editing, value])
 
-  const handleSave = () => {
+  const handleSave = useCallback(async () => {
     const trimmed = editValue.trim()
-    if (trimmed !== value) onSave(trimmed)
+    if (trimmed === value) { setEditing(false); return }
+    setStatus("saving")
+    try {
+      await Promise.resolve(onSave(trimmed))
+      setStatus("saved")
+      setTimeout(() => setStatus("idle"), 2000)
+    } catch {
+      setStatus("error")
+      setTimeout(() => setStatus("idle"), 3000)
+    }
     setEditing(false)
-  }
+  }, [editValue, value, onSave])
+
+  const statusIndicator = status === "saving" ? <span className="ml-0.5 text-[10px] text-yellow-500">⏳</span>
+    : status === "saved" ? <span className="ml-0.5 text-[10px] text-emerald-500">✓</span>
+    : status === "error" ? <span className="ml-0.5 text-[10px] text-red-500">✗</span>
+    : null
 
   if (editing) {
     return (
@@ -44,17 +59,20 @@ export function InlineEdit({ value, onSave, placeholder = "—", type = "text", 
   }
 
   return (
-    <span
-      onClick={(e) => { e.stopPropagation(); setEditing(true) }}
-      className={`cursor-pointer hover:bg-zinc-800/30 rounded px-1 -mx-1 py-0.5 transition-colors inline-block touch-manipulation ${className}`}
-    >
-      {linkify && value ? (
-        <a href={`https://t.me/${value.replace(/^@+/, "")}`} target="_blank" rel="noopener noreferrer"
-           onClick={(e) => e.stopPropagation()}
-           className="text-blue-400 hover:text-blue-300">
-          @{value.replace(/^@+/, "")}
-        </a>
-      ) : value || <span className="text-zinc-600">{placeholder}</span>}
+    <span className="inline-flex items-center">
+      <span
+        onClick={(e) => { e.stopPropagation(); setEditing(true) }}
+        className={`cursor-pointer hover:bg-zinc-800/30 rounded px-1 -mx-1 py-0.5 transition-colors inline-block touch-manipulation ${className}`}
+      >
+        {linkify && value ? (
+          <a href={`https://t.me/${value.replace(/^@+/, "")}`} target="_blank" rel="noopener noreferrer"
+             onClick={(e) => e.stopPropagation()}
+             className="text-blue-400 hover:text-blue-300">
+            @{value.replace(/^@+/, "")}
+          </a>
+        ) : value || <span className="text-zinc-600">{placeholder}</span>}
+      </span>
+      {statusIndicator}
     </span>
   )
 }

@@ -150,6 +150,7 @@ export function useClients(params: {
   return useQuery<{ clients: Client[]; total: number }>({
     queryKey: ["clients", params],
     queryFn: () => authFetch(`${API}/api/clients?${searchParams}`).then((r) => r.json()),
+    staleTime: 60_000,
   })
 }
 
@@ -169,6 +170,7 @@ export function useDeals(params: { limit?: number; offset?: number }) {
   return useQuery<{ deals: Deal[]; total: number }>({
     queryKey: ["deals", params],
     queryFn: () => authFetch(`${API}/api/deals?${searchParams}`).then((r) => r.json()),
+    staleTime: 60_000,
   })
 }
 
@@ -176,6 +178,7 @@ export function useStats() {
   return useQuery<Stats>({
     queryKey: ["stats"],
     queryFn: () => authFetch(`${API}/api/stats`).then((r) => r.json()),
+    staleTime: 30_000,
   })
 }
 

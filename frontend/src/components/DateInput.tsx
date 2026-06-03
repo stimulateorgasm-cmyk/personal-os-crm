@@ -57,10 +57,12 @@ function timePart(iso: string): string {
 function parseManual(s: string, showTime: boolean): string {
   const clean = s.replace(/[^\d]/g, "")
   if (clean.length < 8) return ""
-  const dd = clean.slice(0, 2)
-  const mm = clean.slice(2, 4)
-  const yyyy = clean.slice(4, 8)
-  const d = new Date(`${yyyy}-${mm}-${dd}T12:00:00`)
+  const dd = parseInt(clean.slice(0, 2))
+  const mm = parseInt(clean.slice(2, 4))
+  const yyyy = parseInt(clean.slice(4, 8))
+  // Валидация: месяц 1-12, день 1-31
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return ""
+  const d = new Date(`${clean.slice(4, 8)}-${clean.slice(2, 4)}-${clean.slice(0, 2)}T12:00:00`)
   if (isNaN(d.getTime())) return ""
 
   if (showTime && clean.length >= 12) {

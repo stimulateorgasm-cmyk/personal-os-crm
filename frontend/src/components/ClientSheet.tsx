@@ -412,6 +412,8 @@ function ChatBubble({ item, onTranscribe, clientId, editingTaskId, setEditingTas
       }
 
       const saveEdit = (body: Record<string, any>) => {
+        // Не отправлять пустую дату на сервер
+        if (body.due_date === "") body = { ...body, due_date: "" }
         authFetch(`${API}/api/tasks/${item.id}`, {
           method: "PATCH", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),

@@ -77,7 +77,7 @@ function parseManual(s: string, showTime: boolean): string {
 
 /** ISO → ДД.ММ.ГГГГ [ЧЧ:ММ] */
 function isoToDisplay(iso: string, showTime: boolean): string {
-  if (!iso) return ""
+  if (!iso || iso === "undefined" || iso === "null") return ""
   const parts = iso.split(" ")
   const dateParts = parts[0].split("-")
   if (dateParts.length !== 3) return ""

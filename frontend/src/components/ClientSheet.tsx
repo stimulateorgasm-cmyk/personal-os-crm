@@ -12,7 +12,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { formatDate, formatTime, getStatusStyle, cn, displayNick } from "@/lib/utils"
+import { formatDate, formatTime, getStatusStyle, cn, displayNick, tgLink } from "@/lib/utils"
 import { authFetch, API } from "@/hooks/use-api"
 import { TasksWidget } from "./TasksWidget"
 import { DateInput } from "./DateInput"

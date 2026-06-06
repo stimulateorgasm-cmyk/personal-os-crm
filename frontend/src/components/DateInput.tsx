@@ -127,14 +127,20 @@ export function DateInput({
   showTime = false,
 }: DateInputProps) {
   const [showPopover, setShowPopover] = useState(false)
-  const [text, setText] = useState(() => isoToDisplay(value, showTime))
+  const [text, setText] = useState(() => {
+    // Защита от битых данных (NaN.NaN, null, undefined)
+    const clean = isoToDisplay(value, showTime)
+    if (clean.includes("NaN")) return ""
+    return clean
+  })
   const inputRef = useRef<HTMLInputElement>(null)
 
   const effectivePlaceholder = placeholder || (showTime ? "ДД.ММ.ГГГГ чч:мм" : "ДД.ММ.ГГГГ")
 
   // Sync external value -> text
   useEffect(() => {
-    setText(isoToDisplay(value, showTime))
+    const display = isoToDisplay(value, showTime)
+    setText(display.includes("NaN") ? "" : display)
   }, [value, showTime])
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {

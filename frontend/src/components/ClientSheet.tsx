@@ -412,8 +412,6 @@ function ChatBubble({ item, onTranscribe, clientId, editingTaskId, setEditingTas
       }
 
       const saveEdit = (body: Record<string, any>) => {
-        // Не отправлять пустую дату на сервер
-        if (body.due_date === "") body = { ...body, due_date: "" }
         authFetch(`${API}/api/tasks/${item.id}`, {
           method: "PATCH", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -1217,7 +1215,7 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                     </SelectContent>
                   </Select>
                   <EditableMeta icon={<Phone size={12} />} label="Телефон" value={c.phone || ""} onSave={(v) => patchClient.mutate({ phone: v })} />
-                  <EditableMeta icon={<AtSign size={12} />} label="@ник" value={displayNick(c.telegram_nick) || ""} onSave={(v) => patchClient.mutate({ telegram_nick: v.replace(/^@+/, "") })} />
+                  <EditableMeta icon={<AtSign size={12} />} label="@ник" value={displayNick(c.telegram_nick) || ""} onSave={(v) => patchClient.mutate({ telegram_nick: v.replace(/^@+/, "") })} href={c.telegram_nick ? tgLink(c.telegram_nick) : undefined} />
                   <EditableMeta icon={<AtSign size={12} />} label="Псевдоним" value={c.pseudonym || ""} onSave={(v) => patchClient.mutate({ pseudonym: v })} />
                   <EditableMeta icon={<AtSign size={12} />} label="Старый ник" value={c.previous_username ? displayNick(c.previous_username) : ""} onSave={(v) => patchClient.mutate({ previous_username: v.replace(/^@+/, "") })} />
                   <EditableMeta icon={<CalendarDays size={12} />} label="День рождения" value={c.birthday || ""} onSave={(v) => patchClient.mutate({ birthday: v })} />
@@ -1384,7 +1382,7 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                     <div className="space-y-3">
                       <EditableMeta icon={<AtSign size={12} />} label="Имя (как представился)" value={c.name} onSave={(v) => patchClient.mutate({ name: v })} />
                       <EditableMeta icon={<AtSign size={12} />} label="ФИО (для договора)" value={c.full_name || ""} onSave={(v) => patchClient.mutate({ full_name: v })} />
-                      <EditableMeta icon={<AtSign size={12} />} label="@ник" value={displayNick(c.telegram_nick) || ""} onSave={(v) => patchClient.mutate({ telegram_nick: v.replace(/^@+/, "") })} />
+                      <EditableMeta icon={<AtSign size={12} />} label="@ник" value={displayNick(c.telegram_nick) || ""} onSave={(v) => patchClient.mutate({ telegram_nick: v.replace(/^@+/, "") })} href={c.telegram_nick ? tgLink(c.telegram_nick) : undefined} />
                       <EditableMeta icon={<AtSign size={12} />} label="Псевдоним" value={c.pseudonym || ""} onSave={(v) => patchClient.mutate({ pseudonym: v })} />
                       <EditableMeta icon={<AtSign size={12} />} label="Старый ник" value={displayNick(c.previous_username) || ""} onSave={(v) => patchClient.mutate({ previous_username: v.replace(/^@+/, "") })} />
                       <EditableMeta icon={<Phone size={12} />} label="Телефон" value={c.phone || ""} onSave={(v) => patchClient.mutate({ phone: v })} />
@@ -1568,8 +1566,13 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                     <div className="px-5 py-2.5 bg-zinc-900/50 border-b border-zinc-800/30 shrink-0">
                       <p className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium mb-1">След. шаг</p>
                       <input
+                        key={c?.id || "no-client"}
                         defaultValue={c?.next_step || ""}
-                        onBlur={(e) => { if (e.target.value !== (c?.next_step || "")) patchClient.mutate({ next_step: e.target.value }) }}
+                        onBlur={(e) => {
+                          const val = e.target.value.trim()
+                          if (val !== (c?.next_step || "")) patchClient.mutate({ next_step: val })
+                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
                         className="w-full h-9 px-3 text-xs rounded-md bg-zinc-950 border border-zinc-800 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 touch-manipulation"
                         placeholder="Укажите следующий шаг..."
                       />
@@ -1782,7 +1785,7 @@ function MetaRow({ icon, label, value }: { icon: React.ReactNode; label: string;
   )
 }
 
-function EditableMeta({ icon, label, value, onSave }: { icon: React.ReactNode; label: string; value: string; onSave: (v: string) => void }) {
+function EditableMeta({ icon, label, value, onSave, href }: { icon: React.ReactNode; label: string; value: string; onSave: (v: string) => void; href?: string }) {
   const [editing, setEditing] = useState(false)
   const [tmp, setTmp] = useState(value)
 
@@ -1811,7 +1814,15 @@ function EditableMeta({ icon, label, value, onSave }: { icon: React.ReactNode; l
       <div className="min-w-0 flex-1">
         <p className="text-[10px] text-zinc-600 uppercase tracking-wider">{label}</p>
         <div className="flex items-center gap-2">
-          <p className="text-xs text-zinc-300 truncate">{value || "—"}</p>
+          {href ? (
+            <a href={href} target="_blank" rel="noopener noreferrer"
+               onClick={(e) => e.stopPropagation()}
+               className="text-xs text-blue-400 hover:text-blue-300 truncate">
+              {value || "—"}
+            </a>
+          ) : (
+            <p className="text-xs text-zinc-300 truncate">{value || "—"}</p>
+          )}
           <span className="text-[9px] text-zinc-700 opacity-0 group-hover:opacity-100 transition-opacity">✎</span>
         </div>
       </div>

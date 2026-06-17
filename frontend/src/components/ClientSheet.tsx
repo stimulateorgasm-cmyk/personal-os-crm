@@ -172,6 +172,10 @@ const ASSIGNEE_LABELS: Record<string, { label: string; color: string }> = {
 }
 
 function getAssignee(source: string | null | undefined, responsible_person?: string | null) {
+  // Русские значения (основные после нормализации)
+  if (responsible_person === "Ассистент") return { label: "Ассистент", color: "bg-purple-500" }
+  if (responsible_person === "Антон") return { label: "Антон", color: "bg-blue-500" }
+  // Английские (совместимость с sender_type из telegram_messages)
   if (responsible_person === "assistant") return { label: "Ассистент", color: "bg-purple-500" }
   if (responsible_person === "personal") return { label: "Антон", color: "bg-blue-500" }
   if (!source) return { label: "Антон", color: "bg-blue-500" }
@@ -1168,7 +1172,7 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
                         <button
                           key={a}
                           onClick={() => {
-                            const v = a === "Ассистент" ? "assistant" : "personal"
+                            const v = a === "Ассистент" ? "Ассистент" : "Антон"
                             patchClient.mutate({ responsible_person: v } as any)
                             setEditingAssignee(false)
                           }}

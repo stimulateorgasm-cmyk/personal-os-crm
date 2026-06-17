@@ -1295,7 +1295,7 @@ async def delete_checklist_item(task_type: str, task_id: int, item_id: int):
 async def list_all_tasks(status: Optional[str] = Query(None), due_date: Optional[str] = Query(None)):
     """Глобальный список задач с именем клиента."""
     conn = _get_db()
-    sql = "SELECT tasks.*, clients.name as client_name, clients.telegram_nick, COALESCE(NULLIF(clients.responsible_person, ''), NULLIF(tasks.responsible_person, '')) as responsible_person FROM tasks LEFT JOIN clients ON tasks.client_id = clients.id"
+    sql = "SELECT tasks.*, clients.name as client_name, clients.telegram_nick, COALESCE(NULLIF(clients.responsible_person, ''), NULLIF(tasks.responsible_person, ''), (SELECT tm.sender_type FROM telegram_messages tm WHERE tm.client_id = tasks.client_id AND tm.sender_type != 'client' ORDER BY tm.created_at DESC LIMIT 1)) as responsible_person FROM tasks LEFT JOIN clients ON tasks.client_id = clients.id"
     where = []
     params = []
     if status:
@@ -1309,7 +1309,13 @@ async def list_all_tasks(status: Optional[str] = Query(None), due_date: Optional
     sql += " ORDER BY tasks.created_at DESC LIMIT 500"
     rows = conn.execute(sql, params).fetchall()
     conn.close()
-    return {"tasks": [_row(r) for r in rows]}
+    tasks = [_row(r) for r in rows]
+    for t in tasks:
+        if t.get("responsible_person") == "personal":
+            t["responsible_person"] = "Антон"
+        elif t.get("responsible_person") == "assistant":
+            t["responsible_person"] = "Ассистент"
+    return {"tasks": tasks}
 
 
 @app.get("/api/clients/{client_id}/tasks")
@@ -1777,7 +1783,7 @@ async def get_client(client_id: int):
             (client_id,),
         ).fetchone())
         if last_sender:
-            result["responsible_person"] = last_sender
+            result["responsible_person"] = "Ассистент" if last_sender == "assistant" else ("Антон" if last_sender == "personal" else last_sender)
     return {
         "client": result,
         "deals": [dict(d) for d in deals],

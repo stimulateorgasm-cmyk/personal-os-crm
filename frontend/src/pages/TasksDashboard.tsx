@@ -163,7 +163,7 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
   function getTaskAssignee(t: TaskRow): string {
     const rp = (t.responsible_person || "").toLowerCase()
     if (rp === "assistant" || rp === "ассистент") return "assistant"
-    if (rp === "personal" || rp === "personal") return "personal"
+    if (rp === "антон" || rp === "personal") return "personal"
     // fallback: по умолчанию Антон
     return "personal"
   }
@@ -183,6 +183,7 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
     })
   }, [tasks, search, assigneeFilter, showArchive])
 
+  const totalActive = useMemo(() => tasks.filter((t: TaskRow) => t.status === "pending").length, [tasks])
   const nowLocal = new Date(); const lpad = (n: number) => String(n).padStart(2, "0")
   
   const todayStr = `${nowLocal.getFullYear()}-${lpad(nowLocal.getMonth()+1)}-${lpad(nowLocal.getDate())}`
@@ -222,7 +223,7 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
         <div>
           <h1 className="text-xl font-semibold text-white">Задачи</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {showArchive ? "Архив выполненных задач" : `${filtered.length} активных задач`}
+            {showArchive ? "Архив выполненных задач" : `${totalActive} активных задач${(assigneeFilter !== "all" || search) ? ` (показано ${filtered.length})` : ""}`}
           </p>
         </div>
         <div className="flex items-center gap-2">

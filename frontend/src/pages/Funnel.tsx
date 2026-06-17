@@ -63,7 +63,10 @@ const ASSIGNEE_LABELS: Record<string, string> = {
 }
 
 function getAssigneeLabel(source: string | null | undefined, responsible_person?: string | null): string {
-  // Если ответственный явно назначен — его и показываем
+  // Явно назначен — русские значения (основные)
+  if (responsible_person === "Ассистент") return "Ассистент"
+  if (responsible_person === "Антон") return "Антон"
+  // Совместимость со старыми английскими значениями
   if (responsible_person === "assistant") return "Ассистент"
   if (responsible_person === "personal") return "Антон"
   // Fallback на старую логику (из source)
@@ -234,7 +237,7 @@ function SortableCard({ client, isDragging, onCreateTask, onOpenMenu }: {
             {["Антон", "Ассистент"].map((a) => (
               <button
                 key={a}
-                onClick={() => patchAssignee.mutate(a === "Ассистент" ? "assistant" : "personal")}
+                onClick={() => patchAssignee.mutate(a === "Ассистент" ? "Ассистент" : "Антон")}
                 className={cn(
                   "text-[10px] px-2 py-1 rounded-md font-medium transition-colors min-h-[32px] touch-manipulation",
                   assignee === a

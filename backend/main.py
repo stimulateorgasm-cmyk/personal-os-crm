@@ -1699,12 +1699,12 @@ async def list_clients(
     order_clause = "ORDER BY COALESCE((SELECT MAX(tm.created_at) FROM telegram_messages tm WHERE tm.client_id = c.id), '1970-01-01') DESC, c.updated_at DESC"
     if USE_PG:
         rows = conn.execute(
-            f"SELECT c.*, (SELECT MAX(tm.created_at) FROM telegram_messages tm WHERE tm.client_id = c.id) as actual_last_contact, COALESCE(c.responsible_person, (SELECT tm2.sender_type FROM telegram_messages tm2 WHERE tm2.client_id = c.id AND tm2.sender_type != 'client' ORDER BY tm2.created_at DESC LIMIT 1)) as responsible_person, (SELECT COUNT(*) FROM deals d WHERE d.client_id = c.id AND (d.archived IS NULL OR d.archived = 0)) as deal_count, (SELECT COUNT(*) FROM tasks t WHERE t.client_id = c.id AND t.status = 'pending') as tasks_pending FROM clients c{where_clause} {order_clause} LIMIT ? OFFSET ?",
+            f"SELECT c.*, (SELECT MAX(tm.created_at) FROM telegram_messages tm WHERE tm.client_id = c.id) as actual_last_contact, COALESCE(NULLIF(c.responsible_person, ''), (SELECT tm2.sender_type FROM telegram_messages tm2 WHERE tm2.client_id = c.id AND tm2.sender_type != 'client' ORDER BY tm2.created_at DESC LIMIT 1)) as responsible_person, (SELECT COUNT(*) FROM deals d WHERE d.client_id = c.id AND (d.archived IS NULL OR d.archived = 0)) as deal_count, (SELECT COUNT(*) FROM tasks t WHERE t.client_id = c.id AND t.status = 'pending') as tasks_pending FROM clients c{where_clause} {order_clause} LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
     else:
         rows = conn.execute(
-            f"SELECT c.*, (SELECT MAX(tm.created_at) FROM telegram_messages tm WHERE tm.client_id = c.id) as actual_last_contact, COALESCE(c.responsible_person, (SELECT tm2.sender_type FROM telegram_messages tm2 WHERE tm2.client_id = c.id AND tm2.sender_type != 'client' ORDER BY tm2.created_at DESC LIMIT 1)) as responsible_person, (SELECT COUNT(*) FROM deals d WHERE d.client_id = c.id AND (d.archived IS NULL OR d.archived = 0)) as deal_count, (SELECT COUNT(*) FROM tasks t WHERE t.client_id = c.id AND t.status = 'pending') as tasks_pending FROM clients c{where_clause} {order_clause} LIMIT ? OFFSET ?",
+            f"SELECT c.*, (SELECT MAX(tm.created_at) FROM telegram_messages tm WHERE tm.client_id = c.id) as actual_last_contact, COALESCE(NULLIF(c.responsible_person, ''), (SELECT tm2.sender_type FROM telegram_messages tm2 WHERE tm2.client_id = c.id AND tm2.sender_type != 'client' ORDER BY tm2.created_at DESC LIMIT 1)) as responsible_person, (SELECT COUNT(*) FROM deals d WHERE d.client_id = c.id AND (d.archived IS NULL OR d.archived = 0)) as deal_count, (SELECT COUNT(*) FROM tasks t WHERE t.client_id = c.id AND t.status = 'pending') as tasks_pending FROM clients c{where_clause} {order_clause} LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
     conn.close()

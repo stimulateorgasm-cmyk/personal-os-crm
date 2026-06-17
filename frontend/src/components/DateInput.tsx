@@ -263,7 +263,7 @@ export function DateInput({
   const startOffset = Math.max(0, firstDayOfWeek === 0 ? 6 : firstDayOfWeek - 1)
   const todayStr = now.toDateString()
 
-  const days: (number | null)[] = Array(Math.max(1, startOffset)).fill(null)
+  const days: (number | null)[] = Array(startOffset).fill(null)
   for (let d = 1; d <= daysInMonth; d++) days.push(d)
 
   // ─── Presets (only in showTime mode) ────────────────────

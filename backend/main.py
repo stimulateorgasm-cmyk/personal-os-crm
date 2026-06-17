@@ -217,6 +217,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("crm")
 
 app = FastAPI(title="Personal OS CRM")
+
+
+# ─── Chain Scheduler (фоновая задача) ────────────────────────────────────────
+async def _chain_scheduler_loop():
+    """Проверять цепочки каждые 15 минут."""
+    while True:
+        try:
+            await _process_chains()
+        except Exception as e:
+            logger.warning("Chain scheduler error: %s", e)
+        await asyncio.sleep(900)  # 15 минут
+
+
+@app.on_event("startup")
+async def _start_scheduler():
+    asyncio.ensure_future(_chain_scheduler_loop())
+    asyncio.ensure_future(_start_bot_polling())
+    logger.info("Chain scheduler and bot polling started")
 raw_origins = os.environ.get("ALLOWED_ORIGINS", "")
 cors_origins = [o.strip() for o in raw_origins.split(",") if o.strip()] if raw_origins else ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
@@ -545,6 +563,25 @@ for stmt in ([
             _pg_conn and _pg_conn.rollback()
         pass
 
+# Migration: create chain tables (прогрев сообщений)
+_chain_sql = [
+    "CREATE TABLE IF NOT EXISTS chain_messages (id SERIAL PRIMARY KEY, test_type TEXT NOT NULL, trigger TEXT NOT NULL, step INTEGER NOT NULL, delay_minutes INTEGER NOT NULL, text_template TEXT NOT NULL, is_active INTEGER DEFAULT 1)",
+    "CREATE TABLE IF NOT EXISTS chain_state (id SERIAL PRIMARY KEY, test_result_id INTEGER, telegram_id TEXT DEFAULT '', test_type TEXT NOT NULL, trigger TEXT NOT NULL, current_step INTEGER DEFAULT 0, last_sent_at TEXT, next_send_at TEXT, status TEXT DEFAULT 'active', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
+] if USE_PG else [
+    "CREATE TABLE IF NOT EXISTS chain_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, test_type TEXT NOT NULL, trigger TEXT NOT NULL, step INTEGER NOT NULL, delay_minutes INTEGER NOT NULL, text_template TEXT NOT NULL, is_active INTEGER DEFAULT 1)",
+    "CREATE TABLE IF NOT EXISTS chain_state (id INTEGER PRIMARY KEY AUTOINCREMENT, test_result_id INTEGER, telegram_id TEXT DEFAULT '', test_type TEXT NOT NULL, trigger TEXT NOT NULL, current_step INTEGER DEFAULT 0, last_sent_at TEXT, next_send_at TEXT, status TEXT DEFAULT 'active', created_at TEXT DEFAULT (datetime('now')))",
+]
+for stmt in _chain_sql:
+    try:
+        c = _get_db()
+        c.execute(stmt)
+        c.commit()
+        c.close()
+    except Exception:
+        if USE_PG:
+            _pg_conn and _pg_conn.rollback()
+        pass
+
 # ─── Models ───────────────────────────────────────────────────────────────────
 
 class ClientCreate(BaseModel):
@@ -587,6 +624,22 @@ class QuizSubmit(BaseModel):
     quiz_name: str | None = None
     start_param: str | None = None
     current_question: int = 0
+    video_key: str | None = None
+
+
+class ChainMessageCreate(BaseModel):
+    test_type: str
+    trigger: str
+    step: int
+    delay_minutes: int
+    text_template: str
+    is_active: int = 1
+
+
+class ChainMessageUpdate(BaseModel):
+    text_template: str | None = None
+    delay_minutes: int | None = None
+    is_active: int | None = None
 
 
 class SendPdfRequest(BaseModel):
@@ -670,12 +723,37 @@ async def _notion_notify_quiz(result: QuizSubmit) -> None:
                 logger.warning("Telegram chitkod notify failed: %s", resp.text)
         return
 
-    # Default notification for other quiz results
-    name_display = result.name or result.telegram_username or "Аноним"
+    # Mens test completed notification → topic "Чит-код 1%"
+    if result.state == "completed_test" and result.test_type == "mens":
+        total_score = result.total_score or result.score or 0
+        contact = result.telegram_username or result.telegram_id or "—"
+        text = (
+            f"🧪 <b>Мужской тест пройден</b>\n\n"
+            f"👤 Контакт: {e('@' + contact) if contact != '—' and not contact.startswith('ID ') else e(contact)}\n"
+            f"📊 Уровень: {e(result.level)}\n"
+            f"⭐ Баллы: {total_score}/10\n"
+            f"🎯 Источник: {e(result.utm_source or '—')}"
+        )
+        url = f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}/sendMessage"
+        async with httpx.AsyncClient(timeout=10) as tg:
+            resp = await tg.post(url, json={
+                "chat_id": ASSISTANT_CHAT_ID, "text": text,
+                "parse_mode": "HTML", "message_thread_id": CHITKOD_TOPIC_ID,
+            })
+            if resp.status_code != 200:
+                logger.warning("Telegram mens completed notify failed: %s", resp.text)
+        return
+
+    # Default notification for female quiz results → topic 2372
+    contact_str = ""
+    if result.telegram_username:
+        contact_str = f" (@{e(result.telegram_username)})"
+    elif result.telegram_id:
+        contact_str = f" (ID {e(result.telegram_id)})"
+    name_display = result.name or result.telegram_username or result.telegram_id or "Аноним"
     text = (
-        f"🧪 <b>Новый результат — {result.test_type}</b>\n"
-        f"👤 {e(name_display)}"
-        + (f" (@{e(result.telegram_username)})" if result.telegram_username else "")
+        f"🧪 <b>Новый результат — женский тест</b>\n"
+        f"👤 {e(name_display)}{contact_str}"
         + f"\n🔓 Свобода: {result.freedom_score}/40"
         + f"\n💋 Сексуальность: {result.sexuality_score}/60"
         + f"\n🎯 Диагноз: {e(result.diagnosis)}"
@@ -683,7 +761,7 @@ async def _notion_notify_quiz(result: QuizSubmit) -> None:
     )
     url = f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}/sendMessage"
     async with httpx.AsyncClient(timeout=10) as tg:
-        resp = await tg.post(url, json={"chat_id": -1001609919837, "text": text, "parse_mode": "HTML", "message_thread_id": 2372})
+        resp = await tg.post(url, json={"chat_id": ASSISTANT_CHAT_ID, "text": text, "parse_mode": "HTML", "message_thread_id": 2372})
         if resp.status_code != 200:
             logger.warning("Telegram notify failed: %s", resp.text)
 
@@ -1217,7 +1295,7 @@ async def delete_checklist_item(task_type: str, task_id: int, item_id: int):
 async def list_all_tasks(status: Optional[str] = Query(None), due_date: Optional[str] = Query(None)):
     """Глобальный список задач с именем клиента."""
     conn = _get_db()
-    sql = "SELECT tasks.*, clients.name as client_name, clients.telegram_nick, COALESCE(tasks.responsible_person, clients.responsible_person) as responsible_person FROM tasks LEFT JOIN clients ON tasks.client_id = clients.id"
+    sql = "SELECT tasks.*, clients.name as client_name, clients.telegram_nick, COALESCE(NULLIF(tasks.responsible_person, ''), clients.responsible_person) as responsible_person FROM tasks LEFT JOIN clients ON tasks.client_id = clients.id"
     where = []
     params = []
     if status:
@@ -1816,6 +1894,11 @@ async def quiz_submit(result: QuizSubmit):
     """Принять результат теста. Пишет в локальную БД + Notion."""
     source_label = "Женский тест" if result.test_type == "female" else "Мужской тест"
 
+    # Не сохраняем анонимов без контакта
+    has_contact = bool(result.telegram_id or result.telegram_username or result.name or result.phone)
+    if not has_contact:
+        return {"ok": True, "skipped": True, "reason": "no contact info"}
+
     # Параллельное создание в Notion (пропускаем для авто-регистрации)
     notion_id = None
     if result.state == "started":
@@ -1918,6 +2001,9 @@ async def quiz_submit(result: QuizSubmit):
             conn.commit()
         conn.commit()
         conn.close()
+        # Запуск цепочки прогрева для незавершённого теста
+        if result.telegram_id:
+            asyncio.ensure_future(_start_chain(existing_id or 0, result.telegram_id, result.telegram_username or '', result.test_type or 'mens', 'in_progress'))
         return {"ok": True, "client_id": None, "notion_page_id": None}
 
     # ── purchase_tripwire — UPSERT (обновить существующую запись) ──
@@ -1946,7 +2032,7 @@ async def quiz_submit(result: QuizSubmit):
         else:
             # Ставим 'Выдать контент' только если клиент ещё не продвинулся по воронке
             cur_status = conn.execute("SELECT status FROM clients WHERE id = ?", (client_id,)).fetchone()
-            if cur_status and cur_status[0] in ("Контакт", None, ""):
+            if cur_status and cur_status["status"] in ("Контакт", None, ""):
                 conn.execute(
                     "UPDATE clients SET status = 'Выдать контент', updated_at = datetime('now') WHERE id = ?",
                     (client_id,),
@@ -2086,12 +2172,34 @@ async def quiz_submit(result: QuizSubmit):
     if result.state == "completed_test":
         conn.execute("UPDATE quiz_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'live_increment'")
 
+    # Получаем id результата для цепочки прогрева (до закрытия conn)
+    tr_id = None
+    if result.state == "completed_test" and result.telegram_id:
+        tr = conn.execute(
+            "SELECT id FROM test_results WHERE telegram_id = ? AND test_type = ? ORDER BY id DESC LIMIT 1",
+            (result.telegram_id, result.test_type)
+        ).fetchone()
+        if tr:
+            tr_id = tr["id"]
+
     conn.commit()
     conn.close()
 
-    # Уведомление — только для female
-    if result.state == "completed_test" and result.test_type == "female":
+    # Уведомление
+    if result.state == "completed_test":
         await _notion_notify_quiz(result)
+
+    # Запуск цепочки прогрева (только если есть контакт)
+    if tr_id:
+        asyncio.ensure_future(_start_chain(tr_id, result.telegram_id, result.telegram_username or '', result.test_type, 'completed'))
+
+    # Отправка видео в бота при completed_test
+    if result.state == "completed_test" and result.telegram_id:
+        # video_key определяется автоматически: video1 для completed, может быть переопределён фронтом
+        vkey = result.video_key or "video1"
+        # Для женского теста video2 пока не используем (нет второго экрана)
+        logger.info("Auto-sending video %s to %s (test_type=%s)", vkey, result.telegram_id, result.test_type)
+        asyncio.ensure_future(_send_video_to_user(result.telegram_id, result.test_type, vkey))
 
     return {"ok": True, "client_id": client_id, "notion_page_id": notion_id}
 
@@ -2118,16 +2226,22 @@ async def quiz_results(test_type: str = Query("all"), limit: int = 200, offset: 
     w = (" WHERE " + " AND ".join(where)) if where else ""
     total = _scalar(conn.execute(f"SELECT COUNT(*) FROM test_results{w}", params).fetchone())
     rows = conn.execute(
-        f"SELECT tr.*, c.name as client_name, c.telegram_nick as telegram_username FROM test_results tr LEFT JOIN clients c ON tr.client_id = c.id{w} ORDER BY tr.created_at DESC LIMIT ? OFFSET ?",
+        f"SELECT tr.*, c.name as client_name, c.telegram_nick as client_telegram_nick FROM test_results tr LEFT JOIN clients c ON tr.client_id = c.id{w} ORDER BY tr.created_at DESC LIMIT ? OFFSET ?",
         params + [limit, offset],
     ).fetchall()
     conn.close()
     items = []
     for r in rows:
         item = _row(r)
-        # Для старых записей без telegram_username: name хранит @username, подставляем
-        if not item.get("telegram_username") and item.get("name", "").startswith("@"):
-            item["telegram_username"] = item["name"].lstrip("@")
+        # telegram_username: приоритет — собственное поле tr.telegram_username,
+        # затем client_telegram_nick (для старых записей без миграции),
+        # затем name с @ (для совсем старых)
+        if not item.get("telegram_username"):
+            if item.get("client_telegram_nick"):
+                item["telegram_username"] = item["client_telegram_nick"]
+            elif item.get("name", "").startswith("@"):
+                item["telegram_username"] = item["name"].lstrip("@")
+        del item["client_telegram_nick"]
         # Если client_id нет — пытаемся найти по telegram_username или telegram_id
         if not item.get("client_id"):
             tun = (item.get("telegram_username") or "").strip()
@@ -2271,7 +2385,7 @@ async def quiz_mens_stats():
         level_map[lvl] = level_map.get(lvl, 0) + 1
     levels_list = [{"name": k, "count": v} for k, v in sorted(level_map.items(), key=lambda x: -x[1])]
 
-    # UTM breakdown: слияние legacy + БД
+    # UTM breakdown: слияние legacy + БД в одну строку на источник
     db_utm: dict[str, dict] = {}
     for r in unique:
         src = (r.get("utm_source") or "").strip() or "—"
@@ -2286,18 +2400,12 @@ async def quiz_mens_stats():
 
     conn.close()
 
-    # Слияние: legacy + БД (legacy ключи — плоские source, без medium/campaign)
-    all_source_keys = set(LEGACY_UTM_DATA.keys())
-    sources_list = []
-    seen_sources: dict[str, list] = {}
-    for key, db in db_utm.items():
-        src = db["source"]
-        if src not in seen_sources:
-            seen_sources[src] = []
-        seen_sources[src].append(db)
-    for src in sorted(all_source_keys, key=lambda s: -(LEGACY_UTM_DATA.get(s, {}).get("total", 0))):
-        leg = LEGACY_UTM_DATA.get(src, {"total": 0, "opened": 0, "passed": 0, "video1": 0, "video2": 0, "booked": 0, "purchase": 0, "call": 0})
-        merged = {
+    # Слияние: legacy + БД — один проход, один словарь
+    sources_map: dict[str, dict] = {}
+    # 1. Сначала legacy-данные (ключи — плоские source, без medium/campaign)
+    LEGACY = LEGACY_UTM_DATA
+    for src, leg in LEGACY.items():
+        sources_map[src] = {
             "source": src, "medium": "", "campaign": "",
             "total": leg["total"],
             "opened": leg["opened"],
@@ -2308,34 +2416,42 @@ async def quiz_mens_stats():
             "purchase": leg["purchase"],
             "call": leg["call"],
         }
-        target_actions = merged["booked"] + merged["purchase"] + merged["call"]
-        base_total = max(leg["opened"], 1)
-        merged["conversion"] = min(round(target_actions / base_total * 100), 100)
-        sources_list.append(merged)
-        # Добавить детальные строки для новых записей с этим source
-        if src in seen_sources:
-            for db in seen_sources.pop(src):
-                merged = {
-                    "source": db["source"], "medium": db["medium"], "campaign": db["campaign"],
-                    "total": db["total"], "opened": db["total"], "completed": db["completed"],
-                    "video1": 0, "video2": 0, "booked": db["booked"], "purchase": 0, "call": 0,
+    # 2. Прибавить данные из БД (сгруппированные по source)
+    for db in db_utm.values():
+        src = db["source"]
+        med = db["medium"]
+        cam = db["campaign"]
+        if src in sources_map:
+            # Legacy source — мержим в одну строку, medium/campaign из первой записи БД
+            entry = sources_map[src]
+            if med and not entry["medium"]:
+                entry["medium"] = med
+            if cam and not entry["campaign"]:
+                entry["campaign"] = cam
+            entry["total"] += db["total"]
+            entry["opened"] += db["total"]
+            entry["completed"] += db["completed"]
+            entry["booked"] += db["booked"]
+        else:
+            # Новый source — просто добавляем
+            if src not in sources_map:
+                sources_map[src] = {
+                    "source": src, "medium": med, "campaign": cam,
+                    "total": 0, "opened": 0, "completed": 0,
+                    "video1": 0, "video2": 0, "booked": 0, "purchase": 0, "call": 0,
                 }
-                target_actions = merged["booked"]
-                base_total = max(db["total"], 1)
-                merged["conversion"] = min(round(target_actions / base_total * 100), 100)
-                sources_list.append(merged)
-    # Оставшиеся новые источники (без legacy)
-    for src, dbs in seen_sources.items():
-        for db in dbs:
-            merged = {
-                "source": db["source"], "medium": db["medium"], "campaign": db["campaign"],
-                "total": db["total"], "opened": db["total"], "completed": db["completed"],
-                "video1": 0, "video2": 0, "booked": db["booked"], "purchase": 0, "call": 0,
-            }
-            target_actions = merged["booked"]
-            base_total = max(db["total"], 1)
-            merged["conversion"] = min(round(target_actions / base_total * 100), 100)
-            sources_list.append(merged)
+            entry = sources_map[src]
+            entry["total"] += db["total"]
+            entry["opened"] += db["total"]
+            entry["completed"] += db["completed"]
+            entry["booked"] += db["booked"]
+
+    sources_list = []
+    for src, entry in sorted(sources_map.items(), key=lambda x: -x[1]["total"]):
+        target_actions = entry["booked"] + entry["purchase"] + entry["call"]
+        base_total = max(entry["opened"], 1)
+        entry["conversion"] = min(round(target_actions / base_total * 100), 100)
+        sources_list.append(entry)
 
     return {
         "total": total,
@@ -2346,14 +2462,14 @@ async def quiz_mens_stats():
         "booked": booked_db,
         "by_source": sources_list,
         "legacy_totals": {
-            "total": 623,
-            "opened": 607,
-            "completed": 468,
-            "booked": 25,
-            "video1": 260,
-            "video2": 67,
-            "purchase_intent": 8,
-            "call_intent": 17,
+            "total": total,
+            "opened": opened,
+            "completed": completed,
+            "booked": booked_db,
+            "video1": sum(leg["video1"] for leg in LEGACY_UTM_DATA.values()),
+            "video2": sum(leg["video2"] for leg in LEGACY_UTM_DATA.values()),
+            "purchase_intent": sum(leg["purchase"] for leg in LEGACY_UTM_DATA.values()),
+            "call_intent": sum(leg["call"] for leg in LEGACY_UTM_DATA.values()),
         },
     }
 
@@ -2377,6 +2493,119 @@ async def quiz_mens_event(data: MensEvent):
     finally:
         db.close()
     return {"ok": True}
+
+
+VIDEO_CATALOG = {
+    "mens": {
+        "video1": {
+            "file_id": "BAACAgIAAxkBAAIErGolk-SdQIdpuxEZfH4JV7-mExatAALtqwACjHUxSR-KcPGxQlroOwQ",
+            "buttons": [
+                [{"text": "📺 YouTube", "url": "https://youtu.be/kUMMKAXRDFY"}],
+                [{"text": "▶️ VK Видео", "url": "https://vkvideo.ru/video-215480274_456239113?list=ln-9HzJPeBkBWJRV8irsp"}],
+                [{"text": "🎬 RuTube", "url": "https://rutube.ru/video/private/478bb90b5834121b2d3e5f64313b2346/?p=A4Mfhes2Lyim2-FmEuSvug"}],
+            ],
+            "caption": (
+                "<b>Как ты можешь делать своих девушек возбужденными и мокрыми через слова?</b>\n\n"
+                "Смотреть на площадках →\n\n"
+                "00:00 — Как свести девушку с ума без прикосновений\n"
+                "00:10 — Секс-фейлы, которые всё портят\n"
+                "01:27 — Негативные последствия в жизни без секса\n"
+                "01:42 — Слова, от которых она тает\n"
+                "02:34 — Как меняется жизнь с качественным сексом?\n"
+                "02:49 — Как стать её лучшим?"
+            ),
+        },
+        "video2": {
+            "file_id": "BAACAgIAAxkBAAIErWolldZi4L_abckZxxCfb5N-ZIZ1AAIdrAACjHUxSdl2ykmlI3Q1OwQ",
+            "buttons": [
+                [{"text": "📺 YouTube", "url": "https://youtu.be/CtVRDg7sHZY"}],
+                [{"text": "▶️ VK Видео", "url": "https://vkvideo.ru/video-215480274_456239114?list=ln-rC09dwEy7kN0J8ZRhd"}],
+                [{"text": "🎬 RuTube", "url": "https://rutube.ru/video/private/a305d2cea2b881f72ae8982272e3bb04/?p=y3MZn4J8-0E2-ok96V-xCA"}],
+            ],
+            "caption": (
+                "<b>Как работает трансовый (гипнотический) оргазм?</b>\n\n"
+                "Смотреть на площадках →\n\n"
+                "Понравился контент? Перешли другу.\U0001f609\n\n"
+                "0:00 — Почему тема гипнотических оргазмов важна\n"
+                "0:34 — Как это работает?\n"
+                "1:20 — До и после освоения гипнооргазма\n"
+                "2:13 — Где и как можно вызвать гипнооргазм?\n"
+                "2:42 — Что происходит с девушкой после опыта гипнооргазма\n"
+                "3:56 — До и после — тело как высокочувствительный инструмент\n"
+                "4:47 — Кто я такой?\n"
+                "5:52 — Как обучиться гипнооргазму?\n"
+                "6:37 — Отзывы участников курса\n"
+                "8:50 — Пример реальной техники гипнотического внушения\n"
+                "10:07 — Как стать лучшим любовником.\n\n"
+                "<i>Если что-то внутри отозвалось — ты знаешь, куда идти. Решение за тобой.</i>"
+            ),
+        },
+    },
+    "female": {
+        "video1": {
+            "file_id": "BAACAgIAAxkBAAPHaiWXyJi886oQo81KXQ9oWBDYWboAAmGrAAI_SDBJOOQN9ekl79Q7BA",
+            "buttons": [
+                [{"text": "📺 YouTube", "url": "https://youtu.be/9I1vZ3VmtIU"}],
+                [{"text": "▶️ VK Видео", "url": "https://vkvideo.ru/video-215480274_456239111"}],
+                [{"text": "🎬 RuTube", "url": "https://rutube.ru/video/private/010f54cce51f609c72ae1c97fad7ea0b/?p=LD0i3hl3F0PvCKjj2EZ-wA"}],
+            ],
+            "caption": (
+                "<b>Как ты через прокачку сексуальности и оргазмичности станешь счастливее, здоровее, реализованнее и укрепишь свои отношения?</b>\n\n"
+                "Смотреть на площадках →\n\n"
+                "Таймкоды:\n"
+                "00:19 — Как я делаю девушек богинями секса?\n"
+                "00:20 — Типичные трудности в сексе у женщин\n"
+                "01:20 — Мифы и установки о собственной \"инаковости\"\n"
+                "02:22 — Сценарии секса без удовлетворения\n"
+                "03:43 — Как это влияет на психику женщины\n"
+                "04:51 — Влияние на мужчину и отношения\n"
+                "05:59 — Оргазмичность как первооснова женского развития\n"
+                "06:54 — Решение: как можно иначе?\n"
+                "07:31 — Методика без магии и эзотерики\n"
+                "08:17 — Влияние на жизнь, отношения и карьеру\n"
+                "09:01 — Что даёт женщине оргазмичность?\n\n"
+                "Нравится контент? Перешли подруге.\U0001f609"
+            ),
+        },
+        "video2": {
+            "file_id": "BAACAgIAAxkBAAPLaiWb7sPxOLHOXDvGC-wltEW9OqQAArmrAAI_SDBJfe1QwToJtpY7BA",
+            "buttons": [
+                [{"text": "📺 YouTube", "url": "https://youtu.be/mdFxZxb6Ti8"}],
+                [{"text": "▶️ VK Видео", "url": "https://vkvideo.ru/video-215480274_456239112"}],
+                [{"text": "🎬 RuTube", "url": "https://rutube.ru/video/private/003e4b0087f4c2c970f51ad809a125ca/?p=CV0VfL2mcuA9PRVNiSM6rA"}],
+            ],
+            "caption": (
+                "<b>«Женская Природа»: как это работает? Презентация</b>\n\n"
+                "Смотреть на площадках →\n\n"
+                "00:00 — Женский оргазм: что скрывается за этим понятием\n"
+                "00:33 — Возбуждение во сне: как это объясняет гипнооргазм\n"
+                "00:57 — Как сила слова создаёт оргазм: волшебство или наука?\n"
+                "01:23 — Эволюция оргазма: от 30 секунд до 10 минут удовольствия\n"
+                "02:41 — Метаморфозы тела: от обычного автомобиля до Ferrari\n"
+                "02:50 — Кто я такой?\n"
+                "03:26 — Как убрать препятствия на пути к наслаждению\n"
+                "03:51 — Как этому научиться?\n"
+                "04:47 — Преобразование: от умения расслабляться до уверенности\n"
+                "04:42 — Отзывы реальных женщин\n"
+                "07:11 — Путь к раскрытию сексуальности\n"
+                "08:42 — Секреты оргазма без прикосновений\n"
+                "11:04 — Новая версия себя: уверенная, сексуальная\n\n"
+                "Нравится контент? Перешли подруге.\U0001f609\n\n"
+                "<i>Если где-то внутри откликается — ты знаешь, куда идти. Можно зайти. Можно закрыть. Выбор твой.</i>"
+            ),
+        },
+    },
+}
+
+
+@app.post("/api/quiz/send-video")
+async def quiz_send_video(data: dict):
+    """Отправить пользователю видео в бота (дубль при просмотре в тесте)."""
+    telegram_id = data.get("telegram_id")
+    test_type = data.get("test_type", "mens")
+    video_key = data.get("video_key", "video1")
+    ok, err = await _send_video_to_user(telegram_id, test_type, video_key)
+    return {"ok": ok, "error": err}
 
 
 @app.get("/api/quiz/events")
@@ -2409,7 +2638,7 @@ async def send_pdf(req: SendPdfRequest):
         return {"ok": False, "error": "invalid base64"}
 
     url = f"https://api.telegram.org/bot{QUIZ_BOT_TOKEN}/sendDocument"
-    async with httpx.AsyncClient(timeout=30) as tg:
+    async with httpx.AsyncClient(timeout=60) as tg:
         resp = await tg.post(
             url,
             data={"chat_id": req.telegram_id, "caption": "Твои результаты диагностики 🌸"},
@@ -2575,6 +2804,413 @@ async def _poll_contact(telegram_id: str | int, request_id: str, bot_token: str)
             await asyncio.sleep(2)
 
     logger.info("[poll_contact] timeout reached for tid=%s, no contact found", tid)
+
+
+# ─── API: Цепочки сообщений (прогрев) ──────────────────────────────────────
+
+def _contact_display(telegram_username: str, telegram_id: str) -> str:
+    """Вернуть @username или ID {id} для отображения."""
+    if telegram_username:
+        return f"@{telegram_username}"
+    if telegram_id:
+        return f"ID {telegram_id}"
+    return "—"
+
+
+@app.get("/api/chain/messages")
+async def chain_messages_list(test_type: str = Query("all")):
+    conn = _get_db()
+    if test_type != "all":
+        rows = conn.execute("SELECT * FROM chain_messages WHERE test_type = ? ORDER BY trigger, step", (test_type,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM chain_messages ORDER BY test_type, trigger, step").fetchall()
+    conn.close()
+    return {"items": [_row(r) for r in rows]}
+
+
+@app.post("/api/chain/messages")
+async def chain_messages_create(data: ChainMessageCreate):
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO chain_messages (test_type, trigger, step, delay_minutes, text_template, is_active) VALUES (?, ?, ?, ?, ?, ?)",
+        (data.test_type, data.trigger, data.step, data.delay_minutes, data.text_template, data.is_active)
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.patch("/api/chain/messages/{msg_id}")
+async def chain_messages_update(msg_id: int, data: ChainMessageUpdate):
+    conn = _get_db()
+    sets, params = [], []
+    if data.text_template is not None:
+        sets.append("text_template = ?"); params.append(data.text_template)
+    if data.delay_minutes is not None:
+        sets.append("delay_minutes = ?"); params.append(data.delay_minutes)
+    if data.is_active is not None:
+        sets.append("is_active = ?"); params.append(data.is_active)
+    if not sets:
+        conn.close(); return {"error": "no fields"}
+    params.append(msg_id)
+    conn.execute(f"UPDATE chain_messages SET {', '.join(sets)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.get("/api/chain/state")
+async def chain_state_list(test_type: str = Query("all"), status: str = Query("active")):
+    conn = _get_db()
+    where, params = [], []
+    if test_type != "all":
+        where.append("cs.test_type = ?"); params.append(test_type)
+    if status != "all":
+        where.append("cs.status = ?"); params.append(status)
+    w = (" WHERE " + " AND ".join(where)) if where else ""
+    rows = conn.execute(
+        f"SELECT cs.*, tr.name as result_name, tr.telegram_username, tr.telegram_id "
+        f"FROM chain_state cs LEFT JOIN test_results tr ON cs.test_result_id = tr.id{w} "
+        f"ORDER BY cs.created_at DESC LIMIT 100",
+        params
+    ).fetchall()
+    conn.close()
+    return {"items": [_row(r) for r in rows]}
+
+
+async def _send_chain_message(telegram_id: str, text: str, test_type: str) -> bool:
+    """Отправить сообщение через бота (только бот, без fallback на личный аккаунт)."""
+    bot_token = QUIZ_BOT_TOKEN if test_type == "female" else MENS_BOT_TOKEN
+    if not bot_token:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try:
+        async with httpx.AsyncClient(timeout=10) as tg:
+            resp = await tg.post(url, json={"chat_id": telegram_id, "text": text, "parse_mode": "HTML"})
+            if resp.status_code == 200 and resp.json().get("ok"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+async def _send_video_to_user(telegram_id: str | None, test_type: str, video_key: str) -> tuple[bool, str | None]:
+    """Отправить видео пользователю в Telegram. Возвращает (ok, error)."""
+    if not telegram_id:
+        return False, "no telegram_id"
+    video_info = VIDEO_CATALOG.get(test_type, {}).get(video_key)
+    if not video_info:
+        return False, "unknown video"
+    bot_token = MENS_BOT_TOKEN if test_type == "mens" else QUIZ_BOT_TOKEN
+    if not bot_token:
+        return False, "no bot token"
+    try:
+        async with httpx.AsyncClient(timeout=30) as tg:
+            payload = {
+                "chat_id": telegram_id, "video": video_info["file_id"],
+                "caption": video_info["caption"], "parse_mode": "HTML",
+            }
+            if video_info.get("buttons"):
+                payload["reply_markup"] = {"inline_keyboard": video_info["buttons"]}
+            resp = await tg.post(f"https://api.telegram.org/bot{bot_token}/sendVideo", json=payload)
+            r = resp.json()
+            return r.get("ok", False), r.get("description") if not r.get("ok") else None
+    except Exception as e:
+        return False, str(e)
+
+
+async def _start_chain(test_result_id: int, telegram_id: str, telegram_username: str, test_type: str, trigger: str):
+    """Запустить цепочку для пользователя. Отменяет конфликтующую цепочку (in_progress ↔ completed)."""
+    conn = _get_db()
+    try:
+        # Если стартуем completed — отменить in_progress, и наоборот
+        other_trigger = "in_progress" if trigger == "completed" else "completed"
+        conn.execute(
+            "UPDATE chain_state SET status = 'cancelled' WHERE test_result_id = ? AND test_type = ? AND trigger = ? AND status = 'active'",
+            (test_result_id, test_type, other_trigger)
+        )
+
+        # Проверим, нет ли уже активной цепочки с таким же trigger
+        existing = conn.execute(
+            "SELECT id FROM chain_state WHERE test_result_id = ? AND test_type = ? AND trigger = ? AND status = 'active'",
+            (test_result_id, test_type, trigger)
+        ).fetchone()
+        if existing:
+            return
+        conn.execute(
+            "INSERT INTO chain_state (test_result_id, telegram_id, test_type, trigger, current_step, status) VALUES (?, ?, ?, ?, 0, 'active')",
+            (test_result_id, telegram_id, test_type, trigger)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def _process_chains():
+    """Периодическая задача: проверяет цепочки и отправляет следующие сообщения."""
+    conn = _get_db()
+    try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rows = conn.execute(
+            "SELECT cs.* FROM chain_state cs WHERE cs.status = 'active' AND (cs.next_send_at IS NULL OR cs.next_send_at <= ?)",
+            (now_str,)
+        ).fetchall()
+        # Дедупликация: не больше 1 сообщения за цикл на один telegram_id
+        sent_tg_ids: set[str] = set()
+        for cs in rows:
+            if cs["telegram_id"] in sent_tg_ids:
+                continue
+
+            trigger = cs["trigger"]
+            next_step = cs["current_step"] + 1
+            msgs = conn.execute(
+                "SELECT * FROM chain_messages WHERE test_type = ? AND trigger = ? AND step = ? AND is_active = 1 ORDER BY step LIMIT 1",
+                (cs["test_type"], trigger, next_step)
+            ).fetchall()
+            if not msgs:
+                # Цепочка завершена
+                conn.execute("UPDATE chain_state SET status = 'completed' WHERE id = ?", (cs["id"],))
+                conn.commit()
+                continue
+            msg = msgs[0]
+            text = msg["text_template"]
+            sent = await _send_chain_message(cs["telegram_id"], text, cs["test_type"])
+            if sent:
+                sent_tg_ids.add(cs["telegram_id"])
+                delay = msg["delay_minutes"]
+                next_send = datetime.now() + timedelta(minutes=delay)
+                conn.execute(
+                    "UPDATE chain_state SET current_step = ?, last_sent_at = ?, next_send_at = ? WHERE id = ?",
+                    (next_step, now_str, next_send.strftime("%Y-%m-%d %H:%M:%S"), cs["id"])
+                )
+            else:
+                # Не смогли отправить — отменяем цепочку
+                conn.execute("UPDATE chain_state SET status = 'cancelled' WHERE id = ?", (cs["id"],))
+            conn.commit()
+    finally:
+        conn.close()
+
+
+# ─── Bot Inbox Polling (пересылка ответов в топик + ответы от имени бота) ──
+
+# Карта: topic_message_id → (user_chat_id, bot_token, bot_label, user_name)
+_topic_msg_map: dict[int, dict] = {}
+_topic_msg_map_lock = asyncio.Lock()
+
+
+def _read_offset(bot_label: str) -> int:
+    """Читает последний offset из quiz_meta для бота."""
+    try:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT value FROM quiz_meta WHERE key = ?",
+            (f"inbox_offset_{bot_label}",)
+        ).fetchone()
+        conn.close()
+        return int(row["value"]) if row else 0
+    except Exception:
+        return 0
+
+
+def _write_offset(bot_label: str, offset: int):
+    """Сохраняет offset в quiz_meta."""
+    try:
+        conn = _get_db()
+        if USE_PG:
+            conn.execute(
+                "INSERT INTO quiz_meta (key, value) VALUES (%s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET value = %s",
+                (f"inbox_offset_{bot_label}", str(offset), str(offset))
+            )
+        else:
+            conn.execute(
+                "INSERT OR REPLACE INTO quiz_meta (key, value) VALUES (?, ?)",
+                (f"inbox_offset_{bot_label}", str(offset))
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning("Failed to save offset for %s: %s", bot_label, e)
+
+
+async def _poll_bot_inbox(bot_token: str, bot_label: str, offset: int = 0):
+    """Polling для одного бота: пересылает входящие сообщения в топик 'Нам пишут'."""
+    if offset == 0:
+        offset = _read_offset(bot_label)
+        logger.info("Bot %s: starting from offset %d", bot_label, offset)
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    ASSISTANT_GROUP = -1003969188406
+    INBOX_TOPIC = 3876
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=15) as tg:
+                resp = await tg.post(url, json={"offset": offset, "timeout": 10})
+                data = resp.json()
+                if not data.get("ok"):
+                    await asyncio.sleep(5)
+                    continue
+                for update in data.get("result", []):
+                    offset = update.get("update_id", 0) + 1
+                    msg = update.get("message") or update.get("callback_query", {}).get("message")
+                    if not msg:
+                        continue
+                    user = msg.get("from", {})
+                    chat = msg.get("chat", {})
+                    user_id = user.get("id")
+                    username = user.get("username") or user.get("first_name", "пользователь")
+                    text = msg.get("text", "") or msg.get("caption", "")
+                    contact = msg.get("contact")
+                    if not text and not contact:
+                        continue
+                    # Собираем информацию
+                    nick = f"@{username}" if user.get("username") else username
+                    if text:
+                        content = text[:500]
+                    elif contact:
+                        content = f"📞 Поделился контактом: {contact.get('phone_number', '')}"
+                    else:
+                        continue
+                    # Отправляем в топик
+                    forward_text = (
+                        f"📩 <b>{bot_label}</b> — {nick}\n"
+                        f"└ {content}"
+                    )
+                    fwd_resp = await tg.post(
+                        f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}/sendMessage",
+                        json={
+                            "chat_id": ASSISTANT_GROUP,
+                            "text": forward_text,
+                            "parse_mode": "HTML",
+                            "message_thread_id": INBOX_TOPIC,
+                        }
+                    )
+                    # Сохраняем связку topic_msg_id → пользователь, чтобы можно было ответить
+                    try:
+                        fwd_data = fwd_resp.json()
+                        if fwd_data.get("ok") and fwd_data.get("result", {}).get("message_id"):
+                            tmid = fwd_data["result"]["message_id"]
+                            async with _topic_msg_map_lock:
+                                _topic_msg_map[tmid] = {
+                                    "user_chat_id": user_id,
+                                    "user_name": nick,
+                                    "bot_token": bot_token,
+                                    "bot_label": bot_label,
+                                }
+                                # Чистим старые (>500 записей)
+                                if len(_topic_msg_map) > 500:
+                                    oldest = sorted(_topic_msg_map.keys())[:200]
+                                    for k in oldest:
+                                        del _topic_msg_map[k]
+                    except Exception:
+                        pass
+                    # Сохраняем offset после каждого сообщения
+                    _write_offset(bot_label, offset)
+                    # Если есть telegram_id — сохраняем входящее сообщение в БД как ответ на цепочку
+                    user_tid = str(user_id)
+                    try:
+                        conn = _get_db()
+                        conn.execute(
+                            "UPDATE chain_state SET status = 'cancelled' WHERE telegram_id = ? AND status = 'active'",
+                            (user_tid,)
+                        )
+                        conn.commit()
+                        conn.close()
+                    except Exception:
+                        pass
+                # Сохраняем offset после обработки батча
+                _write_offset(bot_label, offset)
+        except Exception as e:
+            logger.warning("Bot inbox poll error for %s: %s", bot_label, e)
+            await asyncio.sleep(5)
+
+
+async def _poll_notify_bot_replies():
+    """Мониторит ответы в топике 'Нам пишут' и пересылает их пользователям от имени тест-бота."""
+    if not NOTIFY_BOT_TOKEN:
+        logger.info("NOTIFY_BOT_TOKEN not set — reply polling skipped")
+        return
+    offset = _read_offset("notify_bot_replies")
+    logger.info("Reply poller: starting from offset %d", offset)
+    url = f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}/getUpdates"
+    ASSISTANT_GROUP_ID = -1003969188406
+    # ID Антона и ассистента, чьи ответы пересылаем
+    ALLOWED_REPLIERS = {121119366, 5673658238}  # ahilleon, tonyroar
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=15) as tg:
+                resp = await tg.post(url, json={"offset": offset, "timeout": 10})
+                data = resp.json()
+                if not data.get("ok"):
+                    await asyncio.sleep(5)
+                    continue
+                for update in data.get("result", []):
+                    offset = update.get("update_id", 0) + 1
+                    msg = update.get("message")
+                    if not msg:
+                        continue
+                    # Только сообщения из группы ассистента и только reply
+                    chat = msg.get("chat", {})
+                    if chat.get("id") != ASSISTANT_GROUP_ID:
+                        continue
+                    reply_to = msg.get("reply_to_message")
+                    if not reply_to:
+                        continue
+                    reply_to_id = reply_to.get("message_id")
+                    # Ищем связку в topic_msg_map
+                    async with _topic_msg_map_lock:
+                        entry = _topic_msg_map.get(reply_to_id)
+                    if not entry:
+                        continue
+                    # Проверяем отправителя
+                    sender = msg.get("from", {})
+                    sender_id = sender.get("id")
+                    if sender_id not in ALLOWED_REPLIERS:
+                        continue
+                    sender_name = sender.get("first_name", "ассистент")
+                    reply_text = msg.get("text", "") or msg.get("caption", "")
+                    if not reply_text:
+                        continue
+                    # Отправляем ответ пользователю от имени тест-бота
+                    user_chat_id = entry["user_chat_id"]
+                    bot_token = entry["bot_token"]
+                    bot_label = entry["bot_label"]
+                    user_name = entry["user_name"]
+                    await tg.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        json={
+                            "chat_id": user_chat_id,
+                            "text": reply_text,
+                            "parse_mode": "HTML",
+                        }
+                    )
+                    # Уведомляем в топик что ответ отправлен
+                    await tg.post(
+                        f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}/sendMessage",
+                        json={
+                            "chat_id": ASSISTANT_GROUP_ID,
+                            "text": f"✅ Ответ от {sender_name} отправлен → {user_name} (через {bot_label})",
+                            "parse_mode": "HTML",
+                            "message_thread_id": msg.get("message_thread_id", 0),
+                            "reply_to_message_id": reply_to_id,
+                        }
+                    )
+                _write_offset("notify_bot_replies", offset)
+        except Exception as e:
+            logger.warning("Reply poller error: %s", e)
+            await asyncio.sleep(5)
+
+
+async def _start_bot_polling():
+    """Запустить поллинг для всех ботов + мониторинг ответов."""
+    tasks = []
+    if QUIZ_BOT_TOKEN:
+        tasks.append(asyncio.ensure_future(_poll_bot_inbox(QUIZ_BOT_TOKEN, "Женский тест")))
+    if MENS_BOT_TOKEN:
+        tasks.append(asyncio.ensure_future(_poll_bot_inbox(MENS_BOT_TOKEN, "Мужской тест")))
+    if NOTIFY_BOT_TOKEN:
+        tasks.append(asyncio.ensure_future(_poll_notify_bot_replies()))
+    logger.info("Bot inbox polling started (inbox + reply monitor)")
+    await asyncio.gather(*tasks)
 
 
 # ─── API: Labels ───────────────────────────────────────────────────────────────

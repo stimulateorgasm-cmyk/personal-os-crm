@@ -183,11 +183,11 @@ function TasksDashboard({ onSelectClient }: TasksDashboardProps) {
     })
   }, [tasks, search, assigneeFilter, showArchive])
 
-  const nowLocal = new Date()
+  const nowLocal = new Date(); const lpad = (n: number) => String(n).padStart(2, "0")
   
-  const todayStr = nowLocal.toISOString().slice(0, 10)
+  const todayStr = `${nowLocal.getFullYear()}-${lpad(nowLocal.getMonth()+1)}-${lpad(nowLocal.getDate())}`
   
-  const nowLocalStr = nowLocal.toISOString().slice(0, 16).replace("T", " ")
+  const nowLocalStr = `${todayStr} ${lpad(nowLocal.getHours())}:${lpad(nowLocal.getMinutes())}`
   const overdue = filtered.filter((t) => t.due_date && (
     t.due_date.slice(0, 10) < todayStr ||
     (t.due_date.slice(0, 10) === todayStr && t.due_date.slice(11) && t.due_date < nowLocalStr)

@@ -1295,7 +1295,7 @@ async def delete_checklist_item(task_type: str, task_id: int, item_id: int):
 async def list_all_tasks(status: Optional[str] = Query(None), due_date: Optional[str] = Query(None)):
     """Глобальный список задач с именем клиента."""
     conn = _get_db()
-    sql = "SELECT tasks.*, clients.name as client_name, clients.telegram_nick, COALESCE(NULLIF(tasks.responsible_person, ''), clients.responsible_person) as responsible_person FROM tasks LEFT JOIN clients ON tasks.client_id = clients.id"
+    sql = "SELECT tasks.*, clients.name as client_name, clients.telegram_nick, COALESCE(NULLIF(clients.responsible_person, ''), NULLIF(tasks.responsible_person, '')) as responsible_person FROM tasks LEFT JOIN clients ON tasks.client_id = clients.id"
     where = []
     params = []
     if status:

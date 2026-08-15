@@ -415,6 +415,7 @@ export default function QuizMensDashboard({ onOpenClient }: { onOpenClient?: (cl
                     <TableHead className="w-auto text-zinc-400 text-xs">Имя</TableHead>
                     <TableHead className="w-auto text-zinc-400 text-xs">Telegram</TableHead>
                     <TableHead className="w-auto text-zinc-400 text-xs">Телефон</TableHead>
+                    <TableHead className="w-auto text-right text-zinc-400 text-xs">Возраст</TableHead>
                     <TableHead className="w-auto text-right text-zinc-400 text-xs">Балл</TableHead>
                     <TableHead className="w-auto text-zinc-400 text-xs max-w-[150px]">Уровень</TableHead>
                     <TableHead className="w-auto text-zinc-400 text-xs max-w-[110px]">Статус</TableHead>
@@ -458,6 +459,7 @@ export default function QuizMensDashboard({ onOpenClient }: { onOpenClient?: (cl
                       <TableCell className="py-2.5 px-3">
                         <EditableCell value={r.phone} field="phone" rowId={r.id} onSave={handleInlineUpdate} />
                       </TableCell>
+                      <TableCell className="py-2.5 px-3 text-right text-zinc-300">{r.age || "—"}</TableCell>
                       <TableCell className="py-2.5 px-3 text-right text-white">{r.total_score || "—"}</TableCell>
                       <TableCell className="py-2.5 px-3 text-zinc-300 max-w-[150px] truncate">{r.level || r.diagnosis || "—"}</TableCell>
                       <TableCell className="py-2.5 px-3">
@@ -500,7 +502,7 @@ export default function QuizMensDashboard({ onOpenClient }: { onOpenClient?: (cl
                   ))}
                   {paginated.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center py-12 text-zinc-600">
+                      <TableCell colSpan={9} className="text-center py-12 text-zinc-600">
                         {search || utmFilter !== "all" || stageFilter !== "all" ? "Ничего не найдено" : "Нет результатов"}
                       </TableCell>
                     </TableRow>

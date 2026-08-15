@@ -247,7 +247,7 @@ def _init_db() -> None:
         db = _get_db()
         for stmt in [
             "CREATE TABLE IF NOT EXISTS clients (id SERIAL PRIMARY KEY, notion_page_id TEXT, name TEXT NOT NULL DEFAULT '', telegram_nick TEXT DEFAULT '', telegram_id TEXT DEFAULT '', phone TEXT DEFAULT '', status TEXT DEFAULT 'Контакт', source TEXT DEFAULT '', last_account TEXT DEFAULT '', last_contact TEXT DEFAULT '', next_step TEXT DEFAULT '', summary TEXT DEFAULT '', follow_up_date TEXT DEFAULT '', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')), updated_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
-            "CREATE TABLE IF NOT EXISTS deals (id SERIAL PRIMARY KEY, notion_page_id TEXT, client_id INTEGER REFERENCES clients(id), title TEXT NOT NULL, status TEXT DEFAULT 'Ожидает', amount REAL DEFAULT 0, paid REAL DEFAULT 0, purchase_date TEXT DEFAULT '', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')), updated_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
+            "CREATE TABLE IF NOT EXISTS deals (id SERIAL PRIMARY KEY, notion_page_id TEXT, client_id INTEGER REFERENCES clients(id), title TEXT NOT NULL, status TEXT DEFAULT 'Ожидает', amount REAL DEFAULT 0, paid REAL DEFAULT 0, purchase_date TEXT DEFAULT '', sessions_total INTEGER DEFAULT 0, sessions_conducted INTEGER DEFAULT 0, created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')), updated_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
             "CREATE TABLE IF NOT EXISTS test_results (id SERIAL PRIMARY KEY, client_id INTEGER REFERENCES clients(id), telegram_id TEXT DEFAULT '', name TEXT DEFAULT '', phone TEXT DEFAULT '', age INTEGER, test_type TEXT DEFAULT 'female', freedom_score INTEGER DEFAULT 0, sexuality_score INTEGER DEFAULT 0, diagnosis TEXT DEFAULT '', utm_source TEXT DEFAULT '', utm_medium TEXT DEFAULT '', utm_campaign TEXT DEFAULT '', answers TEXT DEFAULT '[]', created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')))",
             "CREATE TABLE IF NOT EXISTS quiz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
             "INSERT INTO quiz_meta (key, value) VALUES ('female_count', '157') ON CONFLICT DO NOTHING",
@@ -281,7 +281,7 @@ def _init_db() -> None:
             "CREATE TABLE IF NOT EXISTS task_files (id INTEGER PRIMARY KEY AUTOINCREMENT, task_type TEXT NOT NULL, task_id INTEGER NOT NULL, original_name TEXT NOT NULL, file_path TEXT NOT NULL, mime_type TEXT DEFAULT '', file_size INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')))",
             "CREATE TABLE IF NOT EXISTS task_checklist_items (id INTEGER PRIMARY KEY AUTOINCREMENT, task_type TEXT NOT NULL, task_id INTEGER NOT NULL, text TEXT NOT NULL DEFAULT '', done INTEGER DEFAULT 0, order_index INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')))",
             "CREATE TABLE IF NOT EXISTS clients (id INTEGER PRIMARY KEY AUTOINCREMENT, notion_page_id TEXT, name TEXT NOT NULL DEFAULT '', telegram_nick TEXT DEFAULT '', telegram_id TEXT DEFAULT '', phone TEXT DEFAULT '', status TEXT DEFAULT 'Контакт', source TEXT DEFAULT '', last_account TEXT DEFAULT '', last_contact TEXT DEFAULT '', next_step TEXT DEFAULT '', summary TEXT DEFAULT '', follow_up_date TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))",
-            "CREATE TABLE IF NOT EXISTS deals (id INTEGER PRIMARY KEY AUTOINCREMENT, notion_page_id TEXT, client_id INTEGER REFERENCES clients(id), title TEXT NOT NULL, status TEXT DEFAULT 'Ожидает', amount REAL DEFAULT 0, paid REAL DEFAULT 0, purchase_date TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))",
+            "CREATE TABLE IF NOT EXISTS deals (id INTEGER PRIMARY KEY AUTOINCREMENT, notion_page_id TEXT, client_id INTEGER REFERENCES clients(id), title TEXT NOT NULL, status TEXT DEFAULT 'Ожидает', amount REAL DEFAULT 0, paid REAL DEFAULT 0, purchase_date TEXT DEFAULT '', sessions_total INTEGER DEFAULT 0, sessions_conducted INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))",
             "CREATE TABLE IF NOT EXISTS test_results (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER REFERENCES clients(id), telegram_id TEXT DEFAULT '', name TEXT DEFAULT '', phone TEXT DEFAULT '', age INTEGER, test_type TEXT DEFAULT 'female', freedom_score INTEGER DEFAULT 0, sexuality_score INTEGER DEFAULT 0, diagnosis TEXT DEFAULT '', utm_source TEXT DEFAULT '', utm_medium TEXT DEFAULT '', utm_campaign TEXT DEFAULT '', answers TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))",
             "CREATE TABLE IF NOT EXISTS quiz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
             "INSERT OR IGNORE INTO quiz_meta (key, value) VALUES ('female_count', '157')",
@@ -346,6 +346,8 @@ if USE_PG:
     for col in [
         "ADD COLUMN IF NOT EXISTS sessions TEXT DEFAULT ''",
         "ADD COLUMN IF NOT EXISTS payment_info TEXT DEFAULT ''",
+        "ADD COLUMN IF NOT EXISTS sessions_total INTEGER DEFAULT 0",
+        "ADD COLUMN IF NOT EXISTS sessions_conducted INTEGER DEFAULT 0",
     ]:
         try:
             c = _get_db()
@@ -470,7 +472,7 @@ except Exception:
     pass
 
 # Migration: add columns to deals
-for col in ["sessions TEXT DEFAULT ''", "payment_info TEXT DEFAULT ''", "source TEXT DEFAULT ''"]:
+for col in ["sessions TEXT DEFAULT ''", "payment_info TEXT DEFAULT ''", "sessions_total INTEGER DEFAULT 0", "sessions_conducted INTEGER DEFAULT 0", "source TEXT DEFAULT ''"]:
     try:
         c = _get_db()
         c.execute(f"ALTER TABLE deals ADD COLUMN {col}")
@@ -504,6 +506,49 @@ try:
     c.close()
 except Exception:
     pass
+
+# Migration: add priority to antons_tasks
+try:
+    c = _get_db()
+    if USE_PG:
+        c.execute("ALTER TABLE antons_tasks ADD COLUMN IF NOT EXISTS priority TEXT DEFAULT ''")
+    else:
+        c.execute("ALTER TABLE antons_tasks ADD COLUMN priority TEXT DEFAULT ''")
+    c.commit()
+    c.close()
+except Exception:
+    if USE_PG:
+        _pg_conn and _pg_conn.rollback()
+    pass
+
+# Migration: add priority to assistant_tasks
+try:
+    c = _get_db()
+    if USE_PG:
+        c.execute("ALTER TABLE assistant_tasks ADD COLUMN IF NOT EXISTS priority TEXT DEFAULT ''")
+    else:
+        c.execute("ALTER TABLE assistant_tasks ADD COLUMN priority TEXT DEFAULT ''")
+    c.commit()
+    c.close()
+except Exception:
+    if USE_PG:
+        _pg_conn and _pg_conn.rollback()
+    pass
+
+# Migration: add referrer fields to clients
+for col in ["referrer_id INTEGER REFERENCES clients(id)", "referrer_color TEXT DEFAULT ''"]:
+    try:
+        c = _get_db()
+        if USE_PG:
+            c.execute(f"ALTER TABLE clients ADD COLUMN IF NOT EXISTS {col}")
+        else:
+            c.execute(f"ALTER TABLE clients ADD COLUMN {col}")
+        c.commit()
+        c.close()
+    except Exception:
+        if USE_PG:
+            _pg_conn and _pg_conn.rollback()
+        pass
 
 # Migration: create labels tables
 for stmt in ([
@@ -645,6 +690,7 @@ class ChainMessageUpdate(BaseModel):
 class SendPdfRequest(BaseModel):
     telegram_id: str
     pdf_base64: str
+    test_type: str = "female"
 
 
 # ─── Notion helpers ───────────────────────────────────────────────────────────
@@ -707,7 +753,8 @@ async def _notion_notify_quiz(result: QuizSubmit) -> None:
             f"🔥💰 <b>ПОКУПКА ЧИТ-КОДА</b>\n\n"
             f"👤 Telegram: @{e(result.telegram_username or result.contact or '—')}\n"
             f"📊 Уровень: {e(result.level)}\n"
-            f"⭐ Баллы: {total_score}/10\n"
+            f"⭐ Баллы: {total_score}/30\n"
+            f"🎂 Возраст: {e(str(result.age) if result.age else chr(45))}\n"
             f"🎥 Видео: {video_line}\n"
             f"🎯 Источник: {e(result.utm_source or '—')}\n\n"
             f"💳 Нужно прислать реквизиты для оплаты 4990₽"
@@ -727,11 +774,14 @@ async def _notion_notify_quiz(result: QuizSubmit) -> None:
     if result.state == "completed_test" and result.test_type == "mens":
         total_score = result.total_score or result.score or 0
         contact = result.telegram_username or result.telegram_id or "—"
+        logger.info("Mens test submit: tg_id=%s, age=%s, level=%s, score=%s, utm=%s",
+                    result.telegram_id, result.age, result.level, total_score, result.utm_source)
         text = (
-            f"🧪 <b>Мужской тест пройден</b>\n\n"
+            f"🧪 <b>«Лучший любовник» пройден</b>\n\n"
             f"👤 Контакт: {e('@' + contact) if contact != '—' and not contact.startswith('ID ') else e(contact)}\n"
             f"📊 Уровень: {e(result.level)}\n"
-            f"⭐ Баллы: {total_score}/10\n"
+            f"⭐ Баллы: {total_score}/30\n"
+            f"🎂 Возраст: {e(str(result.age) if result.age else chr(45))}\n"
             f"🎯 Источник: {e(result.utm_source or '—')}"
         )
         url = f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}/sendMessage"
@@ -880,6 +930,7 @@ class AntonTaskPatch(BaseModel):
     description: Optional[str] = None
     order_index: Optional[int] = None
     is_archived: Optional[bool] = None
+    priority: Optional[str] = None
 
 class AntonTaskCreate(BaseModel):
     title: str
@@ -945,6 +996,9 @@ async def patch_anton_task(task_id: int, data: AntonTaskPatch):
     if data.order_index is not None:
         updates.append("order_index = ?")
         params.append(data.order_index)
+    if data.priority is not None:
+        updates.append("priority = ?")
+        params.append(data.priority)
     if data.is_archived is not None:
         updates.append("is_archived = ?")
         params.append(int(data.is_archived))
@@ -1023,6 +1077,7 @@ class AssistantTaskPatch(BaseModel):
     description: Optional[str] = None
     order_index: Optional[int] = None
     is_archived: Optional[bool] = None
+    priority: Optional[str] = None
 
 class AssistantTaskCreate(BaseModel):
     title: str
@@ -1086,6 +1141,9 @@ async def patch_assistant_task(task_id: int, data: AssistantTaskPatch):
     if data.order_index is not None:
         updates.append("order_index = ?")
         params.append(data.order_index)
+    if data.priority is not None:
+        updates.append("priority = ?")
+        params.append(data.priority)
     if data.is_archived is not None:
         updates.append("is_archived = ?")
         params.append(int(data.is_archived))
@@ -1493,28 +1551,56 @@ async def receive_message(msg: IncomingMessage):
                 (msg.telegram_id,)
             ).fetchone()
             if row:
-                client_id = row["id"]
+                cid = row["id"]
+                # Guard: skip catch-all client "Telegram"
+                name_row = conn.execute(
+                    "SELECT name, telegram_nick FROM clients WHERE id = ?", (cid,)
+                ).fetchone()
+                if name_row and name_row["name"] != "Telegram" and name_row["telegram_nick"]:
+                    client_id = cid
 
     if not client_id:
         if not msg.telegram_id:
             conn.close()
             logger.info("Message from unknown user without telegram_id, ignored")
             return {"ok": True, "ignored": True}
-        # Создаём нового клиента для незнакомого telegram_id
-        name = msg.telegram_username.lstrip("@") if msg.telegram_username else msg.telegram_id
-        conn.execute(
-            "INSERT INTO clients (name, telegram_nick, telegram_id, status, source, last_contact, created_at) "
-            "VALUES (?, ?, ?, 'Выдать контент', 'Личка', datetime('now'), datetime('now'))",
-            (name, msg.telegram_username.lstrip("@") if msg.telegram_username else "", msg.telegram_id),
-        )
-        client_id = conn.lastrowid
-        logger.info("Created client %s for unknown user %s", client_id, msg.telegram_username or msg.telegram_id)
+        # Проверяем, не создал ли конкурентный запрос этого клиента
+        row = conn.execute(
+            "SELECT id FROM clients WHERE telegram_id = ?", (msg.telegram_id,)
+        ).fetchone()
+        if row:
+            client_id = row["id"]
+        else:
+            # Создаём нового клиента для незнакомого telegram_id
+            name = msg.telegram_username.lstrip("@") if msg.telegram_username else msg.telegram_id
+            try:
+                conn.execute(
+                    "INSERT INTO clients (name, telegram_nick, telegram_id, status, source, last_contact, created_at) "
+                    "VALUES (?, ?, ?, 'Выдать контент', 'Личка', datetime('now'), datetime('now'))",
+                    (name, msg.telegram_username.lstrip("@") if msg.telegram_username else "", msg.telegram_id),
+                )
+                client_id = conn.lastrowid
+                logger.info("Created client %s for unknown user %s", client_id, msg.telegram_username or msg.telegram_id)
+            except Exception:
+                # Гонка: конкурентный запрос уже создал клиента — перечитываем
+                row = conn.execute(
+                    "SELECT id FROM clients WHERE telegram_id = ?", (msg.telegram_id,)
+                ).fetchone()
+                if row:
+                    client_id = row["id"]
+                else:
+                    raise
 
     conn.execute(
         "INSERT INTO telegram_messages (client_id, telegram_id, sender_type, text, account, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
         (client_id, msg.telegram_id, msg.sender_type, msg.text, msg.account),
     )
-    conn.execute("UPDATE clients SET last_contact = datetime('now'), status = 'Контакт', updated_at = datetime('now') WHERE id = ?", (client_id,))
+    # Не сбрасываем статус клиентам в воронке
+    cur_status = conn.execute("SELECT status FROM clients WHERE id = ?", (client_id,)).fetchone()
+    if cur_status and cur_status.get("status") in ("", "Контакт", None):
+        conn.execute("UPDATE clients SET last_contact = datetime('now'), status = 'Контакт', updated_at = datetime('now') WHERE id = ?", (client_id,))
+    else:
+        conn.execute("UPDATE clients SET last_contact = datetime('now'), updated_at = datetime('now') WHERE id = ?", (client_id,))
     conn.commit()
     conn.close()
     return {"ok": True, "client_id": client_id}
@@ -1547,7 +1633,12 @@ async def create_client_message(client_id: int, data: ClientMessageCreate):
             "INSERT INTO telegram_messages (client_id, sender_type, text, account, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
             (client_id, data.sender, data.text, data.sender),
         )
-        conn.execute("UPDATE clients SET last_contact = datetime('now'), status = 'Контакт', updated_at = datetime('now') WHERE id = ?", (client_id,))
+        # Не сбрасываем статус клиентам в воронке
+        cur_status = conn.execute("SELECT status FROM clients WHERE id = ?", (client_id,)).fetchone()
+        if cur_status and cur_status.get("status") in ("", "Контакт", None):
+            conn.execute("UPDATE clients SET last_contact = datetime('now'), status = 'Контакт', updated_at = datetime('now') WHERE id = ?", (client_id,))
+        else:
+            conn.execute("UPDATE clients SET last_contact = datetime('now'), updated_at = datetime('now') WHERE id = ?", (client_id,))
         conn.commit()
         logger.info("[SAVE] OK")
     except Exception as e:
@@ -1806,6 +1897,8 @@ class ClientPatch(BaseModel):
     archived: Optional[bool] = None
     source: Optional[str] = None
     responsible_person: Optional[str] = None
+    referrer_id: Optional[int] = None
+    referrer_color: Optional[str] = None
     birthday: Optional[str] = None
     pseudonym: Optional[str] = None
     previous_username: Optional[str] = None
@@ -1868,6 +1961,13 @@ async def patch_client(client_id: int, data: ClientPatch):
     if data.previous_username is not None:
         updates.append("previous_username = ?")
         params.append(data.previous_username)
+    patch_dict = data.model_dump(exclude_unset=True)
+    if "referrer_id" in patch_dict:
+        updates.append("referrer_id = ?")
+        params.append(patch_dict["referrer_id"])
+    if "referrer_color" in patch_dict:
+        updates.append("referrer_color = ?")
+        params.append(patch_dict["referrer_color"])
 
     # Обновление в Notion
     notion_id = row["notion_page_id"]
@@ -1893,12 +1993,31 @@ async def patch_client(client_id: int, data: ClientPatch):
     return {"ok": True}
 
 
+# ─── API: Client Search ─────────────────────────────────────────────────────
+
+@app.get("/api/clients/search")
+async def search_clients(q: str = ""):
+    """Search clients by name, nickname or pseudonym for referrer selection."""
+    if not q or len(q.strip()) < 2:
+        return {"clients": []}
+    q = q.strip()
+    conn = _get_db()
+    like = f"%{q}%"
+    rows = conn.execute(
+        "SELECT id, name, telegram_nick, pseudonym FROM clients "
+        "WHERE (name LIKE ? OR telegram_nick LIKE ? OR pseudonym LIKE ?) AND (archived IS NULL OR archived = 0) "
+        "ORDER BY name LIMIT 20",
+        (like, like, like)
+    ).fetchall()
+    conn.close()
+    return {"clients": [{"id": r["id"], "name": r["name"], "telegram_nick": r["telegram_nick"], "pseudonym": r["pseudonym"]} for r in rows]}
+
 # ─── API: Quiz ────────────────────────────────────────────────────────────────
 
 @app.post("/api/quiz/submit")
 async def quiz_submit(result: QuizSubmit):
     """Принять результат теста. Пишет в локальную БД + Notion."""
-    source_label = "Женский тест" if result.test_type == "female" else "Мужской тест"
+    source_label = "ШШ Женский" if result.test_type == "female" else "Лучший любовник"
 
     # Не сохраняем анонимов без контакта
     has_contact = bool(result.telegram_id or result.telegram_username or result.name or result.phone)
@@ -2056,19 +2175,19 @@ async def quiz_submit(result: QuizSubmit):
             phone_value = result.phone or result.contact or None
         if existing_id:
             conn.execute(
-                "UPDATE test_results SET client_id = ?, telegram_username = ?, total_score = ?, level = ?, intent = ?, state = 'purchase_tripwire', "
+                "UPDATE test_results SET client_id = ?, telegram_username = ?, total_score = ?, level = ?, age = ?, intent = ?, state = 'purchase_tripwire', "
                 "utm_source = ?, utm_medium = ?, utm_campaign = ?, start_param = ?, phone = ?, "
                 "created_at = COALESCE(created_at, datetime('now')) WHERE id = ?",
                 (client_id, result.telegram_username or "",
-                 total_score, result.level or "", result.intent or "",
+                 total_score, result.level or "", result.age or None, result.intent or "",
                  result.utm_source or "", result.utm_medium or "", result.utm_campaign or "",
                  result.start_param or "", phone_value if phone_value is not None else (result.phone or result.contact or None),
                  existing_id)
             )
         else:
-            insert_cols = "client_id, telegram_id, telegram_username, name, test_type, total_score, level, utm_source, utm_medium, utm_campaign, start_param, intent, state, created_at"
-            insert_vals = "?, ?, ?, ?, 'mens', ?, ?, ?, ?, ?, ?, ?, 'purchase_tripwire', datetime('now')"
-            insert_params = [client_id, result.telegram_id or "", result.telegram_username or "", result.name or "",
+            insert_cols = "client_id, telegram_id, telegram_username, name, age, test_type, total_score, level, utm_source, utm_medium, utm_campaign, start_param, intent, state, created_at"
+            insert_vals = "?, ?, ?, ?, ?, 'mens', ?, ?, ?, ?, ?, ?, ?, 'purchase_tripwire', datetime('now')"
+            insert_params = [client_id, result.telegram_id or "", result.telegram_username or "", result.name or "", result.age or None,
                              total_score, result.level or "",
                              result.utm_source or "", result.utm_medium or "", result.utm_campaign or "",
                              result.start_param or "", result.intent or ""]
@@ -2131,19 +2250,19 @@ async def quiz_submit(result: QuizSubmit):
 
         if existing_id:
             conn.execute(
-                "UPDATE test_results SET client_id = ?, telegram_id = ?, telegram_username = ?, name = ?, total_score = ?, level = ?, "
+                "UPDATE test_results SET client_id = ?, telegram_id = ?, telegram_username = ?, name = ?, total_score = ?, level = ?, age = ?, "
                 "utm_source = ?, utm_medium = ?, utm_campaign = ?, start_param = ?, answers = ?, state = 'completed_test', "
                 "created_at = COALESCE(created_at, datetime('now')) WHERE id = ?",
-                (client_id, result.telegram_id or "", result.telegram_username or "", result.name or "", total_score, result.level or "",
+                (client_id, result.telegram_id or "", result.telegram_username or "", result.name or "", total_score, result.level or "", result.age or None,
                  result.utm_source or "", result.utm_medium or "", result.utm_campaign or "",
                  result.start_param or "", json.dumps(result.answers or []), existing_id)
             )
         else:
             conn.execute(
-                "INSERT INTO test_results (client_id, telegram_id, telegram_username, name, phone, test_type, total_score, level, "
+                "INSERT INTO test_results (client_id, telegram_id, telegram_username, name, phone, age, test_type, total_score, level, "
                 "utm_source, utm_medium, utm_campaign, start_param, answers, state, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'mens', ?, ?, ?, ?, ?, ?, ?, 'completed_test', datetime('now'))",
-                (client_id, result.telegram_id or "", result.telegram_username or "", result.name or "", phone,
+                "VALUES (?, ?, ?, ?, ?, ?, 'mens', ?, ?, ?, ?, ?, ?, ?, 'completed_test', datetime('now'))",
+                (client_id, result.telegram_id or "", result.telegram_username or "", result.name or "", phone, result.age or None,
                  total_score, result.level or "",
                  result.utm_source or "", result.utm_medium or "", result.utm_campaign or "",
                  result.start_param or "", json.dumps(result.answers or []))
@@ -2165,10 +2284,10 @@ async def quiz_submit(result: QuizSubmit):
 
     # Заметка
     if result.state == "completed_test":
-        test_label = "Женский тест" if result.test_type == "female" else "Мужской тест"
+        test_label = "ШШ Женский" if result.test_type == "female" else "Лучший любовник"
         conn.execute(
             "INSERT INTO notes (client_id, text) VALUES (?, ?)",
-            (client_id, f"📊 Прошёл(ла) {test_label} — {total_score}/10, уровень: {result.level or '—'}"),
+            (client_id, f"📊 Прошёл(ла) {test_label} — {total_score}/{'30' if result.test_type == 'mens' else '10'}, уровень: {result.level or '—'}"),
         )
 
     if USE_PG:
@@ -2200,10 +2319,9 @@ async def quiz_submit(result: QuizSubmit):
         asyncio.ensure_future(_start_chain(tr_id, result.telegram_id, result.telegram_username or '', result.test_type, 'completed'))
 
     # Отправка видео в бота при completed_test
-    if result.state == "completed_test" and result.telegram_id:
-        # video_key определяется автоматически: video1 для completed, может быть переопределён фронтом
+    # Для мужского теста видео1 отправляется по клику на странице результатов, а не авто
+    if result.state == "completed_test" and result.telegram_id and result.test_type != "mens":
         vkey = result.video_key or "video1"
-        # Для женского теста video2 пока не используем (нет второго экрана)
         logger.info("Auto-sending video %s to %s (test_type=%s)", vkey, result.telegram_id, result.test_type)
         asyncio.ensure_future(_send_video_to_user(result.telegram_id, result.test_type, vkey))
 
@@ -2613,6 +2731,13 @@ async def quiz_send_video(data: dict):
     ok, err = await _send_video_to_user(telegram_id, test_type, video_key)
     return {"ok": ok, "error": err}
 
+@app.get("/api/quiz/trigger-video")
+async def quiz_trigger_video(telegram_id: str, video_key: str = "video1", test_type: str = "mens"):
+    """Вызов через Image-маяк (GET без CORS-preflight) из Telegram WebView."""
+    ok, err = await _send_video_to_user(telegram_id, test_type, video_key)
+    return {"ok": ok, "error": err}
+
+
 
 @app.get("/api/quiz/events")
 async def quiz_events(event_filter: Optional[str] = Query(None)):
@@ -2635,24 +2760,36 @@ async def quiz_events(event_filter: Optional[str] = Query(None)):
 
 @app.post("/api/quiz/send-pdf")
 async def send_pdf(req: SendPdfRequest):
-    if not QUIZ_BOT_TOKEN:
-        return {"ok": False, "error": "QUIZ_BOT_TOKEN not configured"}
+    bot_token = MENS_BOT_TOKEN if req.test_type == "mens" else QUIZ_BOT_TOKEN
+    if not bot_token:
+        logging.warning("send_pdf: bot token not configured for test_type=%s", req.test_type)
+        return {"ok": False, "error": "bot token not configured"}
 
     try:
         pdf_bytes = base64.b64decode(req.pdf_base64)
-    except Exception:
+        logging.info("send_pdf: decoded base64, size=%d bytes, tg_id=%s, test_type=%s",
+                     len(pdf_bytes), req.telegram_id, req.test_type)
+    except Exception as e:
+        logging.error("send_pdf: base64 decode failed: %s", e)
         return {"ok": False, "error": "invalid base64"}
 
-    url = f"https://api.telegram.org/bot{QUIZ_BOT_TOKEN}/sendDocument"
-    async with httpx.AsyncClient(timeout=60) as tg:
-        resp = await tg.post(
-            url,
-            data={"chat_id": req.telegram_id, "caption": "Твои результаты диагностики 🌸"},
-            files={"document": ("diagnostics.pdf", pdf_bytes, "application/pdf")},
-        )
-        data = resp.json()
-        if not data.get("ok"):
-            return {"ok": False, "error": data.get("description", "telegram_error")}
+    url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+    try:
+        async with httpx.AsyncClient(timeout=60) as tg:
+            resp = await tg.post(
+                url,
+                data={"chat_id": req.telegram_id, "caption": "Твои результаты диагностики 🔥"},
+                files={"document": ("diagnostics.pdf", pdf_bytes, "application/pdf")},
+            )
+            data = resp.json()
+            logging.info("send_pdf: Telegram response ok=%s, status=%s",
+                        data.get("ok"), resp.status_code)
+            if not data.get("ok"):
+                logging.error("send_pdf: Telegram error: %s", data.get("description", "unknown"))
+                return {"ok": False, "error": data.get("description", "telegram_error")}
+    except Exception as e:
+        logging.error("send_pdf: HTTP request failed: %s", e)
+        return {"ok": False, "error": str(e)}
     return {"ok": True}
 
 
@@ -2699,7 +2836,7 @@ h1 {{ font-size: 1.5rem; margin-bottom: 0.5rem; }}
 .diagnosis p {{ margin: 0; font-size: 1rem; }}
 @media print {{ body {{ padding: 0; }} }}
 </style></head><body>
-<h1>{'Шкала Шумкина' if is_female else 'Мужской тест'}</h1>
+<h1>{'ШШ Женский' if is_female else 'Лучший любовник'}</h1>
 <div class="meta">{result.get('name', '')} &middot; {result.get('created_at', '')}</div>
 <div class="scores">
 <div class="score"><div class="label">Свобода</div><div class="value">{result.get('freedom_score', 0)}/40</div></div>
@@ -3068,6 +3205,9 @@ async def _poll_bot_inbox(bot_token: str, bot_label: str, offset: int = 0):
                     contact = msg.get("contact")
                     if not text and not contact:
                         continue
+                    # Пропускаем служебные /start (пустые, без полезного текста)
+                    if text and text.strip().startswith("/start") and len(text.strip()) <= 7:
+                        continue
                     # Собираем информацию
                     nick = f"@{username}" if user.get("username") else username
                     if text:
@@ -3210,9 +3350,9 @@ async def _start_bot_polling():
     """Запустить поллинг для всех ботов + мониторинг ответов."""
     tasks = []
     if QUIZ_BOT_TOKEN:
-        tasks.append(asyncio.ensure_future(_poll_bot_inbox(QUIZ_BOT_TOKEN, "Женский тест")))
+        tasks.append(asyncio.ensure_future(_poll_bot_inbox(QUIZ_BOT_TOKEN, "ШШ Женский")))
     if MENS_BOT_TOKEN:
-        tasks.append(asyncio.ensure_future(_poll_bot_inbox(MENS_BOT_TOKEN, "Мужской тест")))
+        tasks.append(asyncio.ensure_future(_poll_bot_inbox(MENS_BOT_TOKEN, "Лучший любовник")))
     if NOTIFY_BOT_TOKEN:
         tasks.append(asyncio.ensure_future(_poll_notify_bot_replies()))
     logger.info("Bot inbox polling started (inbox + reply monitor)")
@@ -3397,6 +3537,8 @@ class DealCreate(BaseModel):
     product: str = ""
     reg_number: str = ""
     sessions_count: str = ""
+    sessions_total: int = 0
+    sessions_conducted: int = 0
     contract_status: str = ""
     contract_with: str = ""
     contract_date: str = ""
@@ -3418,6 +3560,7 @@ async def list_deals(
     amount_max: Optional[float] = Query(None),
     archived: Optional[bool] = Query(False),
     debt_only: Optional[bool] = Query(False),
+    product: Optional[str] = Query(None),
     limit: int = Query(100),
     offset: int = Query(0),
 ):
@@ -3434,6 +3577,9 @@ async def list_deals(
         where.append("(d.archived IS NULL OR d.archived = 0)")
     if debt_only:
         where.append("(COALESCE(d.amount, 0) - COALESCE(d.paid, 0)) > 0")
+    if product:
+        where.append("d.product = ?")
+        params.append(product)
     if status:
         where.append("d.status = ?")
         params.append(status)
@@ -3474,6 +3620,8 @@ class DealPatch(BaseModel):
     product: Optional[str] = None
     reg_number: Optional[str] = None
     sessions_count: Optional[str] = None
+    sessions_total: Optional[int] = None
+    sessions_conducted: Optional[int] = None
     contract_status: Optional[str] = None
     contract_with: Optional[str] = None
     contract_date: Optional[str] = None
@@ -3516,6 +3664,15 @@ async def patch_deal(deal_id: int, data: DealPatch):
     if data.archived is not None:
         updates.append("archived = ?")
         params.append(1 if data.archived else 0)
+    if data.sessions_total is not None:
+        updates.append("sessions_total = ?")
+        params.append(data.sessions_total)
+    if data.sessions_conducted is not None:
+        updates.append("sessions_conducted = ?")
+        params.append(data.sessions_conducted)
+    if data.client_id is not None:
+        updates.append("client_id = ?")
+        params.append(data.client_id)
 
     for field in ["product", "reg_number", "sessions_count", "contract_status", "contract_with", "contract_date", "act_status", "assistant_pct", "source", "referral_pct", "referral_paid"]:
         val = getattr(data, field, None)
@@ -3594,8 +3751,8 @@ async def create_deal(data: DealCreate | None = None):
 
     conn = _get_db()
     cur = conn.execute(
-        "INSERT INTO deals (notion_page_id, client_id, title, product, status, amount, paid, purchase_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (notion_id, data.client_id, title, data.product or "", data.status or "Ожидает", data.amount or 0, data.paid or 0, purchase_date))
+        "INSERT INTO deals (notion_page_id, client_id, title, product, status, amount, paid, purchase_date, sessions_total, sessions_conducted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (notion_id, data.client_id, title, data.product or "", data.status or "Ожидает", data.amount or 0, data.paid or 0, purchase_date, data.sessions_total or 0, data.sessions_conducted or 0))
     deal_id = conn.lastrowid
     conn.commit()
     conn.close()
@@ -4215,6 +4372,13 @@ async def stats():
         "AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.client_id = c.id AND t.status = 'pending') "
         "GROUP BY c.status"
     ).fetchall()
+    # Referrer statistics
+    referrer_stats = conn.execute(
+        "SELECT c2.id, c2.name, c2.telegram_nick, c2.referrer_color, COUNT(*) as cnt "
+        "FROM clients c1 JOIN clients c2 ON c1.referrer_id = c2.id "
+        "WHERE (c1.archived IS NULL OR c1.archived = 0) "
+        "GROUP BY c2.id, c2.name, c2.telegram_nick, c2.referrer_color ORDER BY cnt DESC"
+    ).fetchall()
     conn.close()
     without_tasks_map = {r["status"]: r["cnt"] for r in without_tasks}
     return {
@@ -4222,6 +4386,7 @@ async def stats():
         "by_status": [{"status": r["status"], "count": r["cnt"], "without_task": without_tasks_map.get(r["status"], 0)} for r in by_status],
         "total_deals": total_deals,
         "deals_sum": deals_sum,
+        "referrer_stats": [{"id": r["id"], "name": r["name"], "telegram_nick": r["telegram_nick"], "color": r["referrer_color"], "count": r["cnt"]} for r in referrer_stats],
     }
 
 
@@ -4573,6 +4738,9 @@ async def mira_patch_anton_task(task_id: int, data: AntonTaskPatch):
     if data.order_index is not None:
         updates.append("order_index = ?")
         params.append(data.order_index)
+    if data.priority is not None:
+        updates.append("priority = ?")
+        params.append(data.priority)
     if data.is_archived is not None:
         updates.append("is_archived = ?")
         params.append(int(data.is_archived))
@@ -4687,6 +4855,9 @@ async def mira_patch_assistant_task(task_id: int, data: AssistantTaskPatch):
     if data.order_index is not None:
         updates.append("order_index = ?")
         params.append(data.order_index)
+    if data.priority is not None:
+        updates.append("priority = ?")
+        params.append(data.priority)
     if data.is_archived is not None:
         updates.append("is_archived = ?")
         params.append(int(data.is_archived))

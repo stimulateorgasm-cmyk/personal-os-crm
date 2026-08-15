@@ -46,6 +46,7 @@ interface AssistantTask {
   order_index: number
   comments_count: number
   is_archived: number
+  priority: string
   created_at: string
   updated_at: string
 }
@@ -63,6 +64,12 @@ const STAGE_COLORS: Record<string, { headerBg: string; headerText: string; dotCo
   "Рефлексия":          { headerBg: "bg-cyan-950/30",     headerText: "text-cyan-300",  dotColor: "bg-cyan-500",   accentBorder: "border-t-cyan-500/40" },
   "Готово":             { headerBg: "bg-emerald-950/30",  headerText: "text-emerald-300",dotColor: "bg-emerald-500",accentBorder: "border-t-emerald-500/40" },
   "Важное":             { headerBg: "bg-red-950/30",      headerText: "text-red-300",    dotColor: "bg-red-500",   accentBorder: "border-t-red-500/40" },
+}
+
+const PRIORITY_COLORS: Record<string, { bg: string; text: string; label: string }> = {
+  "Срочно, важно":    { bg: "bg-emerald-500/20", text: "text-emerald-400", label: "Срочно, важно" },
+  "Срочно, не важно": { bg: "bg-amber-500/20",   text: "text-amber-400",   label: "Срочно, не важно" },
+  "Не срочно, важно": { bg: "bg-blue-500/20",    text: "text-blue-400",    label: "Не срочно, важно" },
 }
 
 // ─── Column ───────────────────────────────────────────────────────────────────
@@ -151,6 +158,11 @@ function SortableTaskCard({ task, isDragging, onArchive }: {
       <p className="text-base font-semibold text-zinc-100 leading-tight">
         {task.title || "Без названия"}
       </p>
+      {task.priority && PRIORITY_COLORS[task.priority] && (
+        <div className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium mt-2", PRIORITY_COLORS[task.priority].bg, PRIORITY_COLORS[task.priority].text)}>
+          {task.priority}
+        </div>
+      )}
       <div className="flex items-center justify-between mt-2">
         {task.comments_count > 0 ? (
           <div className="flex items-center gap-1.5 text-xs text-zinc-500">
@@ -231,6 +243,11 @@ function TaskCardPreview({ task }: { task: AntonTask }) {
       <p className="text-base font-semibold text-zinc-100 leading-tight">
         {task.title || "Без названия"}
       </p>
+      {task.priority && PRIORITY_COLORS[task.priority] && (
+        <div className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium mt-2", PRIORITY_COLORS[task.priority].bg, PRIORITY_COLORS[task.priority].text)}>
+          {task.priority}
+        </div>
+      )}
     </div>
   )
 }
@@ -574,8 +591,11 @@ function ArchivedView({ tasks, onSelect }: { tasks: AssistantTask[]; onSelect: (
           className="bg-zinc-800/80 border border-zinc-700 rounded-xl px-5 py-4 hover:border-zinc-600 transition-colors cursor-pointer"
         >
           <p className="text-base font-semibold text-zinc-200">{t.title}</p>
-          <div className="flex items-center gap-3 mt-2">
+          <div className="flex items-center gap-3 mt-2 flex-wrap">
             <span className="text-xs text-zinc-500">{t.status}</span>
+            {t.priority && PRIORITY_COLORS[t.priority] && (
+              <span className={cn("inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium", PRIORITY_COLORS[t.priority].bg, PRIORITY_COLORS[t.priority].text)}>{t.priority}</span>
+            )}
             {t.comments_count > 0 && (
               <span className="flex items-center gap-1 text-xs text-zinc-600">
                 <MessageSquare size={12} />

@@ -235,7 +235,7 @@ export async function generateFemalePdf(result: ResultData): Promise<jsPDF> {
   // Header
   doc.setFontSize(22)
   doc.setTextColor(144, 57, 153)
-  doc.text("Шкала Шумкина", margin, y)
+  doc.text("ШШ Женский", margin, y)
   doc.setFontSize(10)
   doc.setTextColor(128, 128, 128)
   doc.text("Диагностика сексуальности", margin, y + 6)

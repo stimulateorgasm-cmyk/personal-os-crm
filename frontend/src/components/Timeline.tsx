@@ -41,7 +41,7 @@ export function Timeline({ client, deals, testResults, notes = [] }: TimelinePro
     events.push({
       date: t.created_at,
       type: "test",
-      title: t.test_type === "female" ? "Прошла женский тест" : "Прошёл мужской тест",
+      title: t.test_type === "female" ? "Прошла «ШШ Женский»" : "Прошёл «Лучший любовник»",
       description: `${t.diagnosis} (Свобода: ${t.freedom_score}/40, Сексуальность: ${t.sexuality_score}/60)`,
     })
   })

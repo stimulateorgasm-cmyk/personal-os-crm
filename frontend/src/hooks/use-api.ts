@@ -54,6 +54,8 @@ export interface Deal {
   product?: string
   reg_number?: string
   sessions_count?: string
+  sessions_total?: number
+  sessions_conducted?: number
   contract_status?: string
   contract_with?: string
   contract_date?: string

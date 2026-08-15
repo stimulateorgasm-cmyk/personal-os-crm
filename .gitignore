@@ -44,3 +44,6 @@ npm-debug.log*
 # backups
 *.bak*
 *.bak.*
+*.backup*
+*pre-fix*
+*-premerge

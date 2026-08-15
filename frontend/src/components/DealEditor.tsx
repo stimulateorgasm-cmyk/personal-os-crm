@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
@@ -22,26 +22,11 @@ function authFetch(url: string, options: RequestInit = {}) {
   return fetch(url, { ...options, headers })
 }
 
-interface Session {
-  id: number
-  title: string
-  done: boolean
-}
-
 interface Payment {
   id: number
   amount: number
   date: string
   status: "paid" | "pending"
-}
-
-function parseSessions(raw: string | null | undefined): Session[] {
-  if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed)) return parsed
-  } catch { /* not json — legacy text, ignore */ }
-  return []
 }
 
 function parsePayments(raw: string | null | undefined): Payment[] {
@@ -52,9 +37,6 @@ function parsePayments(raw: string | null | undefined): Payment[] {
   } catch { /* not json */ }
   return []
 }
-
-let _sessionIdCounter = Date.now()
-function nextSessId() { return ++_sessionIdCounter }
 
 let _paymentIdCounter = Date.now()
 function nextPayId() { return ++_paymentIdCounter }
@@ -69,6 +51,10 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
   const queryClient = useQueryClient()
 
   const [editingClient, setEditingClient] = useState(false)
+  const [localSessionsTotal, setLocalSessionsTotal] = useState("0")
+  const [localSessionsConducted, setLocalSessionsConducted] = useState("0")
+  const totalRef = useRef<HTMLInputElement>(null)
+  const conductedRef = useRef<HTMLInputElement>(null)
   const [clientSearchQuery, setClientSearchQuery] = useState("")
   const [pendingClientId, setPendingClientId] = useState<number | null>(null)
 
@@ -88,6 +74,12 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
     enabled: !!dealId,
   })
 
+  // Синхронизируем локальное состояние сессий при загрузке/обновлении данных
+  useEffect(() => {
+    setLocalSessionsTotal(String(data?.sessions_total || 0))
+    setLocalSessionsConducted(String(data?.sessions_conducted || 0))
+  }, [data?.sessions_total, data?.sessions_conducted])
+
   const patchDeal = useMutation({
     mutationFn: (body: Record<string, any>) =>
       authFetch(`${API}/api/deals/${dealId}`, {
@@ -95,35 +87,12 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }).then((r) => r.json()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["deals"] })
+    onSuccess: (_data: any) => {
       queryClient.invalidateQueries({ queryKey: ["deal", dealId] })
+      queryClient.invalidateQueries({ queryKey: ["deals"] })
+      queryClient.refetchQueries({ queryKey: ["deals"], type: "active" })
     },
   })
-
-  // Sessions state
-  const sessions: Session[] = parseSessions(data?.sessions)
-  const [sessionsOpen, setSessionsOpen] = useState(false)
-  const [newSessionTitle, setNewSessionTitle] = useState("")
-
-  const toggleSession = useCallback((sessId: number) => {
-    const updated = (data?.sessions ? parseSessions(data.sessions) : []).map((s) =>
-      s.id === sessId ? { ...s, done: !s.done } : s
-    )
-    patchDeal.mutate({ sessions: JSON.stringify(updated) })
-  }, [data?.sessions, patchDeal])
-
-  const addSession = useCallback(() => {
-    const title = newSessionTitle.trim() || `Сессия ${sessions.length + 1}`
-    const updated = [...sessions, { id: nextSessId(), title, done: false }]
-    patchDeal.mutate({ sessions: JSON.stringify(updated) })
-    setNewSessionTitle("")
-  }, [newSessionTitle, sessions, patchDeal])
-
-  const removeSession = useCallback((sessId: number) => {
-    const updated = sessions.filter((s) => s.id !== sessId)
-    patchDeal.mutate({ sessions: JSON.stringify(updated) })
-  }, [sessions, patchDeal])
 
   // Payments state
   const payments: Payment[] = parsePayments(data?.payment_info)
@@ -323,7 +292,7 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
                 </FieldRow>
                 <FieldRow label="Остаток">
                   <div className="min-h-[44px] flex items-center px-3 text-sm font-medium rounded-md bg-zinc-900 border border-zinc-800 text-orange-400">
-                    {((data.amount || 0) - (data.paid || 0)).toLocaleString()}₽
+                    {((data.amount || 0) - (data.paid || 0)).toLocaleString()} руб.
                   </div>
                 </FieldRow>
               </div>
@@ -362,74 +331,42 @@ export function DealEditor({ dealId, onClose, onSelectClient }: DealEditorProps)
                 </FieldRow>
               </div>
 
-              {/* Extra section */}
+              {/* Sessions — Total / Conducted / Remaining */}
               <Separator className="bg-zinc-800/30" />
-              <p className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium">Дополнительно</p>
+              <p className="text-[10px] uppercase tracking-widest text-zinc-600 font-medium">Сессии</p>
               <div className="grid grid-cols-3 gap-2">
-                <FieldRow label="% ассист.">
-                  <Input defaultValue={data.assistant_pct || ""} maxLength={10}
-                    className="h-8 text-xs bg-zinc-900 border-zinc-800 touch-manipulation"
-                    onBlur={(e) => { if (e.target.value !== (data.assistant_pct || "")) patchDeal.mutate({ assistant_pct: e.target.value }) }} />
+                <FieldRow label="Всего">
+                  <Input ref={totalRef} type="text" inputMode="numeric" pattern="[0-9]*" value={localSessionsTotal}
+                    onChange={(e) => setLocalSessionsTotal(e.target.value)}
+                    className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
+                    onBlur={() => {
+                      const total = parseInt(totalRef.current?.value || "0") || 0
+                      const conducted = parseInt(conductedRef.current?.value || "0") || 0
+                      const patch: Record<string, number> = {}
+                      if (total !== (data.sessions_total || 0)) patch.sessions_total = total
+                      if (conducted !== (data.sessions_conducted || 0)) patch.sessions_conducted = conducted
+                      if (Object.keys(patch).length > 0) patchDeal.mutate(patch)
+                    }} />
                 </FieldRow>
-                <FieldRow label="% рефа">
-                  <Input defaultValue={data.referral_pct || ""} maxLength={10}
-                    className="h-8 text-xs bg-zinc-900 border-zinc-800 touch-manipulation"
-                    onBlur={(e) => { if (e.target.value !== (data.referral_pct || "")) patchDeal.mutate({ referral_pct: e.target.value }) }} />
+                <FieldRow label="Проведено">
+                  <Input ref={conductedRef} type="text" inputMode="numeric" pattern="[0-9]*" value={localSessionsConducted}
+                    onChange={(e) => setLocalSessionsConducted(e.target.value)}
+                    className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
+                    onBlur={() => {
+                      const total = parseInt(totalRef.current?.value || "0") || 0
+                      const conducted = parseInt(conductedRef.current?.value || "0") || 0
+                      const patch: Record<string, number> = {}
+                      if (total !== (data.sessions_total || 0)) patch.sessions_total = total
+                      if (conducted !== (data.sessions_conducted || 0)) patch.sessions_conducted = conducted
+                      if (Object.keys(patch).length > 0) patchDeal.mutate(patch)
+                    }} />
                 </FieldRow>
-                <FieldRow label="Выпл. рефу">
-                  <Input defaultValue={data.referral_paid || ""} maxLength={10}
-                    className="h-8 text-xs bg-zinc-900 border-zinc-800 touch-manipulation"
-                    onBlur={(e) => { if (e.target.value !== (data.referral_paid || "")) patchDeal.mutate({ referral_paid: e.target.value }) }} />
+                <FieldRow label="Осталось">
+                  <div className="min-h-[44px] flex items-center px-3 text-sm font-medium rounded-md bg-zinc-900 border border-zinc-800 text-blue-400">
+                    {Math.max(0, (parseInt(localSessionsTotal) || 0) - (parseInt(localSessionsConducted) || 0))}
+                  </div>
                 </FieldRow>
               </div>
-              <FieldRow label="Источник / Реферал">
-                <Input defaultValue={data.source || ""}
-                  className="min-h-[44px] text-sm bg-zinc-900 border-zinc-800 touch-manipulation"
-                  onBlur={(e) => { if (e.target.value !== (data.source || "")) patchDeal.mutate({ source: e.target.value }) }} />
-              </FieldRow>
-
-              {/* Sessions — с редактированием названия */}
-              <Separator className="bg-zinc-800/30" />
-              <FieldRow label={`Сессии (${sessions.length})`}>
-                <div className="space-y-2">
-                  {sessions.map((s) => (
-                    <SessionRow
-                      key={s.id}
-                      session={s}
-                      onToggle={() => toggleSession(s.id)}
-                      onRename={(title) => {
-                        const updated = parseSessions(data.sessions).map((x) =>
-                          x.id === s.id ? { ...x, title } : x
-                        )
-                        patchDeal.mutate({ sessions: JSON.stringify(updated) })
-                      }}
-                      onRemove={() => removeSession(s.id)}
-                    />
-                  ))}
-                  {sessionsOpen && (
-                    <div className="flex gap-2">
-                      <Input
-                        value={newSessionTitle}
-                        onChange={(e) => setNewSessionTitle(e.target.value)}
-                        placeholder="Название сессии"
-                        className="h-9 text-sm bg-zinc-900 border-zinc-800 flex-1 min-w-0"
-                        autoFocus
-                        onKeyDown={(e) => e.key === "Enter" && (addSession(), setSessionsOpen(false))}
-                      />
-                      <Button size="xs" className="h-9 shrink-0" onClick={() => { addSession(); setSessionsOpen(false) }}>
-                        OK
-                      </Button>
-                    </div>
-                  )}
-                  <button
-                    onClick={() => setSessionsOpen(!sessionsOpen)}
-                    className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors min-h-[44px] touch-manipulation"
-                  >
-                    {sessionsOpen ? <X size={14} /> : <Plus size={14} />}
-                    {sessionsOpen ? "Отмена" : "Добавить сессию"}
-                  </button>
-                </div>
-              </FieldRow>
 
               {/* Payments — с редактированием */}
               <FieldRow label={`Оплаты (${payments.length})`}>
@@ -520,56 +457,6 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
     <div className="space-y-1.5">
       <label className="text-[11px] text-zinc-500 font-medium">{label}</label>
       {children}
-    </div>
-  )
-}
-
-// ─── Session row with inline rename ─────────────────────────────────────────────
-function SessionRow({ session, onToggle, onRename, onRemove }: {
-  session: Session; onToggle: () => void; onRename: (title: string) => void; onRemove: () => void
-}) {
-  const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState(session.title)
-
-  useEffect(() => { setValue(session.title); setEditing(false) }, [session.title])
-
-  if (editing) {
-    return (
-      <div className="flex items-center gap-2">
-        <button onClick={onToggle}
-          className="shrink-0 text-zinc-500 hover:text-emerald-400 min-h-[44px] min-w-[44px] flex items-center justify-center">
-          {session.done ? <CheckCircle2 size={18} className="text-emerald-500" /> : <Circle size={18} />}
-        </button>
-        <input
-          autoFocus
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onBlur={() => { onRename(value); setEditing(false) }}
-          onKeyDown={(e) => { if (e.key === "Enter") { onRename(value); setEditing(false) } }}
-          className="flex-1 h-8 px-2 text-sm rounded bg-zinc-950 border border-zinc-700 text-zinc-200 focus:outline-none focus:border-zinc-500"
-        />
-        <button onClick={onRemove}
-          className="shrink-0 text-zinc-600 hover:text-red-400 min-h-[44px] min-w-[44px] flex items-center justify-center">
-          <Trash2 size={14} />
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <button onClick={onToggle}
-        className="shrink-0 text-zinc-500 hover:text-emerald-400 min-h-[44px] min-w-[44px] flex items-center justify-center">
-        {session.done ? <CheckCircle2 size={18} className="text-emerald-500" /> : <Circle size={18} />}
-      </button>
-      <button onClick={() => setEditing(true)}
-        className={cn("flex-1 text-sm text-left", session.done ? "text-zinc-600 line-through" : "text-zinc-200")}>
-        {session.title}
-      </button>
-      <button onClick={onRemove}
-        className="shrink-0 text-zinc-600 hover:text-red-400 min-h-[44px] min-w-[44px] flex items-center justify-center">
-        <Trash2 size={14} />
-      </button>
     </div>
   )
 }

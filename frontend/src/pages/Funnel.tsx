@@ -58,8 +58,8 @@ const STAGE_COLORS: Record<string, { headerBg: string; headerText: string; dotCo
 const ASSIGNEE_LABELS: Record<string, string> = {
   "Личка": "Антон",
   "Ассистент": "Ассистент",
-  "Женский тест": "Ассистент",
-  "Мужской тест": "Ассистент",
+  "ШШ Женский": "Ассистент",
+  "Лучший любовник": "Ассистент",
 }
 
 function getAssigneeLabel(source: string | null | undefined, responsible_person?: string | null): string {
@@ -151,6 +151,14 @@ function SortableCard({ client, isDragging, onCreateTask, onOpenMenu }: {
   const queryClient = useQueryClient()
   const [editingSource, setEditingSource] = useState(false)
   const [editingAssignee, setEditingAssignee] = useState(false)
+  const [referrerSearch, setReferrerSearch] = useState('')
+  const [referrerResults, setReferrerResults] = useState<any[]>([])
+  const [editingReferrer, setEditingReferrer] = useState(false)
+  const [editingReferrerColor, setEditingReferrerColor] = useState(false)
+  const referrerInputRef = useRef<HTMLInputElement>(null)
+
+  const REFERRER_COLORS = ['#10b981', '#8b5cf6', '#f43f5e', '#3b82f6', '#f59e0b', '#ec4899', '#14b8a6', '#f97316']
+  const ANTON_CLIENT_ID = 13686
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -201,7 +209,40 @@ function SortableCard({ client, isDragging, onCreateTask, onOpenMenu }: {
     },
   })
 
-  const SOURCES = ["Личка", "Ассистент", "Женский тест", "Мужской тест", "Ручной ввод", "Бот"]
+  const patchReferrer = useMutation({
+    mutationFn: ({ referrer_id, referrer_color }: { referrer_id: number | null; referrer_color?: string }) =>
+      authFetch(`${API}/api/clients/${client.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ referrer_id, ...(referrer_color ? { referrer_color } : {}) }),
+      }).then((r) => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients'] })
+    },
+  })
+
+  // Fetch referrer details if referrer_id is set
+  const { data: referrerData } = useQuery({
+    queryKey: ['client', client.referrer_id],
+    queryFn: () => client.referrer_id
+      ? authFetch(`${API}/api/clients/${client.referrer_id}`).then((r) => r.json())
+      : null,
+    enabled: !!client.referrer_id,
+  })
+  const referrer = referrerData?.client || null
+
+  const searchReferrers = (q: string) => {
+    setReferrerSearch(q)
+    if (q.length >= 2) {
+      authFetch(`${API}/api/clients/search?q=${encodeURIComponent(q)}`)
+        .then((r) => r.json())
+        .then((d) => setReferrerResults(d.clients || []))
+    } else {
+      setReferrerResults([])
+    }
+  }
+
+  const SOURCES = ["Личка", "Ассистент", "ШШ Женский", "Лучший любовник", "Ручной ввод", "Бот"]
 
   return (
     <div
@@ -290,18 +331,113 @@ function SortableCard({ client, isDragging, onCreateTask, onOpenMenu }: {
           </span>
         )}
 
+        {/* Referrer: контурный pill с @ */}
+        {editingReferrer ? (
+          <div className="flex flex-col gap-1 w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex gap-1 items-center">
+              <input
+                ref={referrerInputRef}
+                value={referrerSearch}
+                onChange={(e) => searchReferrers(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') { setEditingReferrer(false); setReferrerSearch(''); setReferrerResults([]) } }}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-2 py-1 text-[11px] text-zinc-200 outline-none placeholder-zinc-500 focus:border-zinc-500"
+                placeholder="Поиск реферала по имени или нику..."
+                autoFocus
+              />
+              <button onClick={() => { setEditingReferrer(false); setReferrerSearch(''); setReferrerResults([]) }} className="text-[10px] text-zinc-600 px-1">✕</button>
+            </div>
+            {referrerResults.length > 0 && (
+              <div className="flex flex-col gap-0.5 max-h-32 overflow-y-auto bg-zinc-800 rounded-md border border-zinc-700">
+                {referrerResults.map((r: any) => (
+                  <button
+                    key={r.id}
+                    onClick={() => {
+                      const isFirstReferrer = !client.referrer_id
+                      patchReferrer.mutate({ referrer_id: r.id })
+                      setEditingReferrer(false)
+                      setReferrerSearch('')
+                      setReferrerResults([])
+                      if (isFirstReferrer) setEditingReferrerColor(true)
+                    }}
+                    className="text-[10px] px-2 py-1.5 text-left text-zinc-300 hover:bg-zinc-700 rounded-sm transition-colors"
+                  >
+                    {r.name || r.telegram_nick || r.pseudonym || 'Без имени'}
+                    {r.telegram_nick && <span className="text-zinc-500 ml-1.5">@{r.telegram_nick.replace('@', '')}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : client.referrer_id ? (
+          <div className="flex items-center gap-1 flex-wrap" onClick={(e) => e.stopPropagation()}>
+            <span
+              className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium cursor-pointer transition-colors"
+              style={{
+                borderColor: (client.referrer_color || REFERRER_COLORS[0]) + '66',
+                color: client.referrer_color || REFERRER_COLORS[0],
+              }}
+              onClick={() => setEditingReferrerColor(!editingReferrerColor)}
+              title="Сменить цвет реферала"
+            >
+              <span className="text-[11px] leading-none opacity-70">@</span>
+              <span className="max-w-[100px] truncate">{referrer?.name || referrer?.telegram_nick || 'Реф.'}</span>
+            </span>
+            <button
+              onClick={() => patchReferrer.mutate({ referrer_id: null })}
+              className="text-[10px] text-zinc-600 hover:text-red-400 px-0.5"
+              title="Убрать реферала"
+            >✕</button>
+            {editingReferrerColor && (
+              <div className="flex gap-1 items-center bg-zinc-800 rounded-md px-1.5 py-1">
+                {REFERRER_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => {
+                      patchReferrer.mutate({ referrer_id: client.referrer_id, referrer_color: c })
+                      setEditingReferrerColor(false)
+                    }}
+                    className="w-3.5 h-3.5 rounded-full hover:scale-125 transition-transform"
+                    style={{ backgroundColor: c }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            <span
+            onClick={(e) => { e.stopPropagation(); setEditingReferrer(true) }}
+            className="inline-flex items-center gap-1 rounded-full border border-dashed px-2 py-0.5 text-[10px] font-medium cursor-pointer transition-colors border-zinc-800 text-zinc-600 hover:border-zinc-600 hover:text-zinc-400"
+          >
+            + реферал
+          </span>
+          <span
+            onClick={(e) => {
+              e.stopPropagation()
+              patchReferrer.mutate({ referrer_id: ANTON_CLIENT_ID })
+            }}
+            className="inline-flex items-center rounded-full border border-dashed px-2 py-0.5 text-[10px] font-medium cursor-pointer transition-colors border-zinc-700/50 text-zinc-600 hover:border-zinc-500 hover:text-zinc-300"
+            title="Назначить себя рефералом"
+          >
+            Я
+          </span>
+          </>
+        )}
+
+      </div>
+
+        {/* Telegram ник — всегда отдельная строка */}
         {client.telegram_nick && (
           <a
             href={tgLink(client.telegram_nick) || "#"}
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="text-sm text-zinc-500 hover:text-blue-400 truncate"
+            className="inline-block text-xs text-zinc-500 hover:text-blue-400 truncate mt-1"
           >
             {displayNick(client.telegram_nick)}
           </a>
         )}
-      </div>
       {/* Tags */}
       {Array.isArray(client.tags) && client.tags.length > 0 && (
         <div className="flex flex-wrap gap-1 mt-2">
@@ -353,23 +489,36 @@ function SortableCard({ client, isDragging, onCreateTask, onOpenMenu }: {
 }
 
 // ─── DragOverlay preview ───────────────────────────────────────────────────────
-function CardPreview({ client }: { client: Client }) {
+function CardPreview({ client, clients }: { client: Client; clients: Client[] }) {
   const assignee = getAssigneeLabel(client.source, client.responsible_person)
+  const referrerClient = client.referrer_id ? clients.find(function(c: Client) { return c.id === client.referrer_id }) || null : null
   return (
     <div className="w-80 p-4 rounded-xl bg-zinc-800/90 border border-zinc-600 shadow-2xl -rotate-[2deg] backdrop-blur-sm">
       <p className="text-base font-semibold text-white leading-tight">
         {client.name || "Без имени"}
       </p>
-      <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+      {/* Telegram ник — отдельная строка */}
+      {client.telegram_nick && (
+        <p className="text-xs text-zinc-400 truncate mt-1">
+          {displayNick(client.telegram_nick)}
+        </p>
+      )}
+      <div className="flex items-center gap-2 mt-2 flex-wrap">
         <AssigneeBadge assignee={assignee} />
+        {referrerClient && (
+          <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium"
+            style={{
+              borderColor: (client.referrer_color || '#10b981') + '66',
+              color: client.referrer_color || '#10b981',
+            }}
+          >
+            <span className="text-[11px] leading-none opacity-70">@</span>
+            <span className="max-w-[100px] truncate">{referrerClient.name || referrerClient.telegram_nick || 'Реф.'}</span>
+          </span>
+        )}
         {client.source && (
           <span className="inline-flex items-center rounded-full border border-zinc-600 px-2 py-0.5 text-[11px] font-medium text-zinc-300">
             {client.source}
-          </span>
-        )}
-        {client.telegram_nick && (
-          <span className="text-sm text-zinc-400 truncate">
-            {displayNick(client.telegram_nick)}
           </span>
         )}
       </div>
@@ -427,10 +576,21 @@ export function Funnel({ onSelect }: FunnelProps) {
   const [taskType, setTaskType] = useState("follow_up")
   const clickedRef = useRef(false)
 
+  // Фильтры
+  const [tagFilter, setTagFilter] = useState<number | null>(null)
+  const [referrerFilter, setReferrerFilter] = useState<number | null>(null)
+
   const { data: allClients, isLoading } = useQuery({
     queryKey: ["clients", "all"],
     queryFn: () => authFetch(`${API}/api/clients?limit=3000&archived=false`).then((r) => r.json()),
     staleTime: 120_000,
+  })
+
+  // Tags list for filter
+  const { data: tagsList } = useQuery({
+    queryKey: ["tags"],
+    queryFn: () => authFetch(`${API}/api/tags`).then((r) => r.json()),
+    staleTime: 300_000,
   })
 
   const { data: stats } = useQuery({
@@ -507,16 +667,33 @@ export function Funnel({ onSelect }: FunnelProps) {
   )
 
   const clients = useMemo(() => {
-    const raw = allClients?.clients || []
-    if (!searchQuery.trim()) return raw
-    const q = searchQuery.trim().toLowerCase()
-    return raw.filter(
-      (c) =>
-        (c.name && c.name.toLowerCase().includes(q)) ||
-        (c.telegram_nick && c.telegram_nick.toLowerCase().includes(q)) ||
-        (c.phone && c.phone.toLowerCase().includes(q)),
-    )
-  }, [allClients, searchQuery])
+    let raw = allClients?.clients || []
+
+    // Search filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase()
+      raw = raw.filter(
+        (c: any) =>
+          (c.name && c.name.toLowerCase().includes(q)) ||
+          (c.telegram_nick && c.telegram_nick.toLowerCase().includes(q)) ||
+          (c.phone && c.phone.toLowerCase().includes(q)),
+      )
+    }
+
+    // Tag filter
+    if (tagFilter) {
+      raw = raw.filter((c: any) =>
+        Array.isArray(c.tags) && c.tags.some((t: any) => t.id === tagFilter)
+      )
+    }
+
+    // Referrer filter
+    if (referrerFilter) {
+      raw = raw.filter((c: any) => c.referrer_id === referrerFilter)
+    }
+
+    return raw
+  }, [allClients, searchQuery, tagFilter, referrerFilter])
 
   const byStatus: Record<string, Client[]> = useMemo(() => {
     const map: Record<string, Client[]> = {}
@@ -699,7 +876,16 @@ export function Funnel({ onSelect }: FunnelProps) {
               {stats?.total_clients?.toLocaleString() || 0} контактов · {stats?.by_status?.filter((s: any) => s.status !== "Контакт").reduce((a: number, s: any) => a + s.count, 0).toLocaleString() || 0} в воронке · перетащи карточку в другую колонку
               {searchQuery.trim() && (
                 <span className="text-amber-400 ml-1">
-                  · фильтр: «{searchQuery.trim()}»
+                  · поиск: «{searchQuery.trim()}»
+                </span>
+              )}
+              {(tagFilter || referrerFilter) && (
+                <span className="text-emerald-400 ml-1">
+                  · фильтр: {tagFilter ? tagsList?.tags?.find((t: any) => t.id === tagFilter)?.name : null}{tagFilter && referrerFilter ? ' + ' : null}{referrerFilter ? stats?.referrer_stats?.find((r: any) => r.id === referrerFilter)?.name || '#' + referrerFilter : null}
+                  <button
+                    onClick={() => { setTagFilter(null); setReferrerFilter(null) }}
+                    className="ml-1 text-zinc-500 hover:text-zinc-300 text-[10px] align-middle"
+                  >✕ сбросить</button>
                 </span>
               )}
             </p>
@@ -713,11 +899,37 @@ export function Funnel({ onSelect }: FunnelProps) {
               <Plus size={16} />
               <span className="hidden sm:inline">Добавить контакт</span>
             </Button>
+            {/* Tag filter */}
+            <select
+              value={tagFilter || ''}
+              onChange={(e) => setTagFilter(e.target.value ? Number(e.target.value) : null)}
+              className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-zinc-300 outline-none focus:border-zinc-500 appearance-none cursor-pointer min-h-[44px] sm:min-h-0"
+              style={{ maxWidth: 140 }}
+            >
+              <option value="">Все теги</option>
+              {(tagsList?.tags || []).map((t: any) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+
+            {/* Referrer filter */}
+            <select
+              value={referrerFilter || ''}
+              onChange={(e) => setReferrerFilter(e.target.value ? Number(e.target.value) : null)}
+              className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-zinc-300 outline-none focus:border-zinc-500 appearance-none cursor-pointer min-h-[44px] sm:min-h-0"
+              style={{ maxWidth: 140 }}
+            >
+              <option value="">Все рефералы</option>
+              {(stats?.referrer_stats || []).map((r: any) => (
+                <option key={r.id} value={r.id}>@{r.name || r.telegram_nick || r.id} ({r.count})</option>
+              ))}
+            </select>
+
             <div className="relative flex-1 sm:flex-none sm:w-64">
               <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
               <input
                 type="text"
-                placeholder="Фильтр по воронке..."
+                placeholder="Поиск по воронке..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-10 pr-8 py-2.5 text-sm rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
@@ -849,7 +1061,7 @@ export function Funnel({ onSelect }: FunnelProps) {
         </div>
 
         <DragOverlay dropAnimation={null}>
-          {activeClient ? <CardPreview client={activeClient} /> : null}
+          {activeClient ? <CardPreview client={activeClient} clients={clients} /> : null}
         </DragOverlay>
       </DndContext>
 

@@ -79,8 +79,8 @@ export default function QuizDashboard({ highlightTestId, onTestHighlighted }: Qu
 
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
-            <TabsTrigger value="female">Шкала Шумкина</TabsTrigger>
-            <TabsTrigger value="mens">Тест на мастерство</TabsTrigger>
+            <TabsTrigger value="female">ШШ Женский</TabsTrigger>
+            <TabsTrigger value="mens">Лучший любовник</TabsTrigger>
           </TabsList>
 
           <TabsContent value="female">

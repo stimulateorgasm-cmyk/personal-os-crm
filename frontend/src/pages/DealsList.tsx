@@ -67,6 +67,7 @@ export function DealsList({ onSelect, highlightDealId, onDealHighlighted }: Deal
   const [editingDeal, setEditingDeal] = useState<number | null>(null)
   const [offset, setOffset] = useState(0)
   const [search, setSearch] = useState("")
+  const [productFilter, setProductFilter] = useState("")
   const [sortKey, setSortKey] = useState<string | null>("contract_date")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
   const [showNewDeal, setShowNewDeal] = useState(false)
@@ -141,18 +142,18 @@ export function DealsList({ onSelect, highlightDealId, onDealHighlighted }: Deal
     if (appliedAmountMax) p.set("amount_max", appliedAmountMax)
     if (debtOnly) p.set("debt_only", "true")
     if (search) p.set("search", search)
+    if (productFilter) p.set("product", productFilter)
     return p.toString()
-  }, [offset, dateFrom, dateTo, appliedAmountMin, appliedAmountMax, debtOnly, search])
+  }, [offset, dateFrom, dateTo, appliedAmountMin, appliedAmountMax, debtOnly, search, productFilter])
 
   const { data, isLoading } = useQuery({
     queryKey: ["deals", queryParams],
     queryFn: () => authFetch(`${API}/api/deals?${queryParams}`).then((r) => r.json()),
-    staleTime: 30_000,
   })
 
   const resetFilters = useCallback(() => {
     setDateFrom(""); setDateTo(""); setAmountMin(""); setAmountMax("")
-    setAppliedAmountMin(""); setAppliedAmountMax(""); setOffset(0)
+    setAppliedAmountMin(""); setAppliedAmountMax(""); setProductFilter(""); setOffset(0)
   }, [])
 
   const deleteDeal = useMutation({
@@ -177,7 +178,19 @@ export function DealsList({ onSelect, highlightDealId, onDealHighlighted }: Deal
   const patchDeal = useMutation({
     mutationFn: ({ id, body }: { id: number; body: Record<string, any> }) =>
       authFetch(`${API}/api/deals/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["deals"] }),
+    onSuccess: (_data: any, variables: { id: number; body: Record<string, any> }) => {
+      // Мгновенно обновляем все кешированные списки сделок
+      queryClient.setQueriesData({ queryKey: ["deals"] }, (old: any) => {
+        if (!old?.deals) return old
+        return {
+          ...old,
+          deals: old.deals.map((d: any) =>
+            d.id === variables.id ? { ...d, ...variables.body } : d
+          ),
+        }
+      })
+      queryClient.invalidateQueries({ queryKey: ["deals"] })
+    },
   })
 
   const deals: Deal[] = Array.isArray(data?.deals) ? data.deals : []
@@ -243,7 +256,6 @@ export function DealsList({ onSelect, highlightDealId, onDealHighlighted }: Deal
                   <option value="ЖП">ЖП</option>
                   <option value="Диагностика">Диагностика</option>
                   <option value="Обуч. оргазмы">Обуч. оргазмы</option>
-                  <option value="сессии">Сессии</option>
                 </select>
               </div>
               <div className="space-y-2">
@@ -282,10 +294,30 @@ export function DealsList({ onSelect, highlightDealId, onDealHighlighted }: Deal
         </Dialog>
       </div>
 
-      {/* Search */}
-      <div className="relative max-w-sm mb-4">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
-        <Input placeholder="Поиск по продукту, клиенту, №..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9 h-9 text-sm bg-zinc-900 border-zinc-800" />
+      {/* Search + Product filter */}
+      <div className="flex items-center gap-3 mb-4">
+        <div className="relative max-w-sm flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
+          <Input placeholder="Поиск по продукту, клиенту, №..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9 h-9 text-sm bg-zinc-900 border-zinc-800" />
+        </div>
+        <select
+          value={productFilter}
+          onChange={(e) => { setProductFilter(e.target.value); setOffset(0) }}
+          className="h-9 px-3 text-xs rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 outline-none focus:border-zinc-600 appearance-none cursor-pointer"
+        >
+          <option value="">Все продукты</option>
+          {PRODUCT_OPTIONS.map((p) => (
+            <option key={p.value} value={p.value}>{p.label}</option>
+          ))}
+        </select>
+        {productFilter && (
+          <button
+            onClick={() => { setProductFilter(""); setOffset(0) }}
+            className="flex items-center gap-1 h-7 px-2 text-xs text-zinc-500 hover:text-white rounded hover:bg-zinc-800 transition-colors whitespace-nowrap"
+          >
+            <RotateCcw size={12} />Сброс продукта
+          </button>
+        )}
       </div>
 
       {/* Filters */}
@@ -321,7 +353,7 @@ export function DealsList({ onSelect, highlightDealId, onDealHighlighted }: Deal
               <SortHeader col="client_name" label="ФИО" />
               <TableHead className="whitespace-nowrap"><span className="text-[10px] uppercase tracking-wider">Ник тг</span></TableHead>
               <SortHeader col="status" label="Статус" />
-              <TableHead className="whitespace-nowrap"><span className="text-[10px] uppercase tracking-wider">Сессии</span></TableHead>
+              <TableHead className="whitespace-nowrap"><span className="text-[10px] uppercase tracking-wider">В / П / О</span></TableHead>
               <SortHeader col="amount" label="Сумма" />
               <SortHeader col="paid" label="Оплачено" />
               <TableHead className="whitespace-nowrap"><span className="text-[10px] uppercase tracking-wider">Остаток</span></TableHead>
@@ -432,25 +464,33 @@ function DealRow({ deal, remainder, onSelect, onDelete, onOpenSheet, patchDeal, 
       <TableCell>
         <InlineSelect value={deal.status} options={STATUS_OPTIONS} onSelect={(v) => handlePatch({ status: v })} />
       </TableCell>
-      {/* 6 — Сессии */}
-      <TableCell>
-        <InlineEdit value={deal.sessions_count || ""} onSave={(v) => handlePatch({ sessions_count: v })} placeholder="" className="text-xs w-12 text-center" />
+      {/* 6 — Сессии: всего / проведено / осталось */}
+      <TableCell className="text-xs whitespace-nowrap text-center">
+        <span className="inline-flex items-center gap-0.5 text-[11px]">
+          <InlineEdit value={String(deal.sessions_total || 0)} onSave={(v) => handlePatch({ sessions_total: parseInt(v) || 0 })} type="number" placeholder="0" className="w-10 text-right" />
+          <span className="text-zinc-600">/</span>
+          <InlineEdit value={String(deal.sessions_conducted || 0)} onSave={(v) => handlePatch({ sessions_conducted: parseInt(v) || 0 })} type="number" placeholder="0" className="w-10 text-right" />
+          <span className="text-zinc-600">/</span>
+          <span className={cn("w-8 text-right tabular-nums", (deal.sessions_total - deal.sessions_conducted) > 0 ? "text-blue-400" : "text-zinc-500")}>
+            {Math.max(0, (deal.sessions_total || 0) - (deal.sessions_conducted || 0))}
+          </span>
+        </span>
       </TableCell>
       {/* 7 — Сумма */}
       <TableCell className="font-medium whitespace-nowrap">
-        <InlineEdit value={String(deal.amount || 0)} onSave={(v) => handlePatch({ amount: parseFloat(v) || 0 })} type="number" placeholder="0" className="w-20 text-right font-medium" />
+        <InlineEdit value={String(deal.amount || 0)} onSave={(v) => handlePatch({ amount: parseFloat(v) || 0 })} type="number" placeholder="0" className="w-20 text-right font-medium" /><span className="ml-1 text-xs text-zinc-600">₽</span>
       </TableCell>
       {/* 8 — Оплачено — read-only если есть платежи */}
       <TableCell className="whitespace-nowrap">
         {deal.payment_info && deal.payment_info !== "[]" ? (
-          <span className="text-sm text-zinc-300">{String(deal.paid || 0)}₽</span>
+          <span className="text-sm text-zinc-300 text-right w-full inline-block">{(deal.paid || 0).toLocaleString()} ₽</span>
         ) : (
-          <InlineEdit value={String(deal.paid || 0)} onSave={(v) => handlePatch({ paid: parseFloat(v) || 0 })} type="number" placeholder="0" className="w-20 text-right" />
+          <><InlineEdit value={String(deal.paid || 0)} onSave={(v) => handlePatch({ paid: parseFloat(v) || 0 })} type="number" placeholder="0" className="w-20 text-right" /><span className="ml-1 text-xs text-zinc-600">₽</span></>
         )}
       </TableCell>
       {/* 9 — Остаток */}
       <TableCell className={`whitespace-nowrap font-medium ${remainder > 0 ? "text-orange-400" : "text-zinc-600"}`}>
-        {remainder.toLocaleString()}₽
+        {remainder.toLocaleString()} ₽
       </TableCell>
       {/* 10 — Договор */}
       <TableCell>

@@ -312,7 +312,7 @@ export function ScaleAnalytics() {
         {/* Sub-tabs: Обзор / Таблица */}
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">Шкала Шумкина</h1>
+            <h1 className="text-xl font-semibold text-white">ШШ Женский</h1>
             <p className="text-sm text-muted-foreground mt-1">{filtered.length} результатов</p>
           </div>
           <div className="flex gap-1">

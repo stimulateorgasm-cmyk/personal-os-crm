@@ -16,11 +16,18 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import { authFetch, API } from "@/hooks/use-api"
 import { Loader2, Send, Archive, RotateCcw, Trash2, CheckSquare } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { EmojiPickerButton } from "@/components/EmojiPickerButton"
 import { TaskFiles } from "@/components/TaskFiles"
 import { TaskChecklist } from "@/components/TaskChecklist"
 
 const STATUSES = ["Входящие и идеи", "Очередь", "15 задач на неделю", "Делаю сейчас", "Рефлексия", "Готово", "Важное"]
+
+const PRIORITY_OPTIONS = [
+  { value: "Срочно, важно", label: "Срочно, важно", color: "bg-emerald-500" },
+  { value: "Срочно, не важно", label: "Срочно, не важно", color: "bg-amber-500" },
+  { value: "Не срочно, важно", label: "Не срочно, важно", color: "bg-blue-500" },
+]
 
 interface TaskComment {
   id: number
@@ -53,6 +60,7 @@ export function AssistantTaskSheet({ taskId, onClose }: AssistantTaskSheetProps)
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
   const [status, setStatus] = useState("")
+  const [priority, setPriority] = useState("")
   const [commentText, setCommentText] = useState("")
   const titleRef = useRef<HTMLTextAreaElement>(null)
   const descRef = useRef<HTMLTextAreaElement>(null)
@@ -119,6 +127,7 @@ export function AssistantTaskSheet({ taskId, onClose }: AssistantTaskSheetProps)
       setTitle(task.title)
       setDescription(task.description || "")
       setStatus(task.status)
+      setPriority(task.priority || "")
     }
   }, [task])
 
@@ -184,6 +193,27 @@ export function AssistantTaskSheet({ taskId, onClose }: AssistantTaskSheetProps)
                   <SelectContent className="bg-zinc-900 border-zinc-700 text-white">
                     {STATUSES.map((s) => (
                       <SelectItem key={s} value={s} className="text-sm">{s}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={priority}
+                  onValueChange={(v) => {
+                    setPriority(v)
+                    updateTask.mutate({ priority: v })
+                  }}
+                >
+                  <SelectTrigger className="h-9 text-sm w-44 bg-zinc-900 border-zinc-700 text-white">
+                    <SelectValue placeholder="Приоритет" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-zinc-900 border-zinc-700 text-white">
+                    {PRIORITY_OPTIONS.map((p) => (
+                      <SelectItem key={p.value} value={p.value} className="text-sm">
+                        <span className="flex items-center gap-2">
+                          {p.color && <span className={cn("w-2 h-2 rounded-full", p.color)} />}
+                          {p.label}
+                        </span>
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

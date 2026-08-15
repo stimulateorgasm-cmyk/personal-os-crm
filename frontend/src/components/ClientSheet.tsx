@@ -167,8 +167,8 @@ const STATUSES = ["Контакт","Выдать контент","Квалифи
 const ASSIGNEE_LABELS: Record<string, { label: string; color: string }> = {
   "Личка":        { label: "Антон",    color: "bg-blue-500" },
   "Ассистент":    { label: "Ассистент", color: "bg-purple-500" },
-  "Женский тест": { label: "Ассистент", color: "bg-purple-500" },
-  "Мужской тест": { label: "Ассистент", color: "bg-purple-500" },
+  "ШШ Женский": { label: "Ассистент", color: "bg-purple-500" },
+  "Лучший любовник": { label: "Ассистент", color: "bg-purple-500" },
 }
 
 function getAssignee(source: string | null | undefined, responsible_person?: string | null) {
@@ -758,7 +758,7 @@ function SheetSkeleton() {
 // ─── Test Result Card ─────────────────────────────────────────────────────────
 function TestResultCard({ test }: { test: any }) {
   const isFemale = test.test_type === "female"
-  const title = isFemale ? "Шкала Шумкина" : "Мужской тест"
+  const title = isFemale ? "ШШ Женский" : "Лучший любовник"
   const dateStr = formatDate(test.created_at)
   const testId = test.id
 
@@ -1049,7 +1049,7 @@ export function ClientSheet({ clientId, onClose }: ClientSheetProps) {
   // Timeline events for left panel
   const timelineEvents: { date: string; type: string; title: string; desc: string }[] = []
   if (c?.created_at) timelineEvents.push({ date: c.created_at, type: "created", title: "Клиент создан", desc: `Источник: ${c.source || "—"}` })
-  if (data?.test_results) data.test_results.forEach((t: any) => timelineEvents.push({ date: t.created_at, type: "test", title: t.test_type === "female" ? "Прошла женский тест" : "Прошёл мужской тест", desc: `${t.diagnosis} (Свобода: ${t.freedom_score}/40, Сексуальность: ${t.sexuality_score}/60)` }))
+  if (data?.test_results) data.test_results.forEach((t: any) => timelineEvents.push({ date: t.created_at, type: "test", title: t.test_type === "female" ? "Прошла «ШШ Женский»" : "Прошёл «Лучший любовник»", desc: `${t.diagnosis} (Свобода: ${t.freedom_score}/40, Сексуальность: ${t.sexuality_score}/60)` }))
   if (data?.deals) data.deals.forEach((d: any) => timelineEvents.push({ date: d.created_at, type: "deal", title: `Сделка: ${d.title}`, desc: `${d.amount?.toLocaleString()}₽` }))
   timelineEvents.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 

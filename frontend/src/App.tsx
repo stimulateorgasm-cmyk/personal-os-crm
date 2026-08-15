@@ -129,14 +129,14 @@ function CRMApp() {
             </Suspense>
         {page === "dashboard" && <GlobalDashboard />}
         {page === "search" && <SearchResults onSelect={setSelectedClientId} />}
-      </ErrorBoundary>
 
-      <SheetProvider>
-        <ClientSheet clientId={selectedClientId} onClose={() => setSelectedClientId(null)} />
-        <TaskSheet taskId={selectedTaskId} onClose={() => setSelectedTaskId(null)} />
-        <AssistantTaskSheet taskId={selectedAssistantTaskId} onClose={() => setSelectedAssistantTaskId(null)} />
-        <MiraGlobalChat />
-      </SheetProvider>
+        <SheetProvider>
+          <ClientSheet clientId={selectedClientId} onClose={() => setSelectedClientId(null)} />
+          <TaskSheet taskId={selectedTaskId} onClose={() => setSelectedTaskId(null)} />
+          <AssistantTaskSheet taskId={selectedAssistantTaskId} onClose={() => setSelectedAssistantTaskId(null)} />
+          <MiraGlobalChat />
+        </SheetProvider>
+      </ErrorBoundary>
     </Layout>
   )
 }

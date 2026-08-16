@@ -105,3 +105,41 @@ export function tgUserLink(tid: string | null | undefined): string | null {
   if (!tid) return null
   return `tg://user?id=${tid}`
 }
+
+export function formatNumber(value: number | undefined | null): string {
+  if (value === undefined || value === null) return "0"
+  return value.toLocaleString("ru-RU")
+}
+
+export function formatMoney(value: number | undefined | null): string {
+  if (value === undefined || value === null) return "0 ₽"
+  return `${value.toLocaleString("ru-RU")} ₽`
+}
+
+export function formatPercent(value: number | undefined | null): string {
+  if (value === undefined || value === null) return "0%"
+  return `${value > 0 ? "+" : ""}${value}%`
+}
+
+export function getAdStatusStyle(status: string): string {
+  const s = status.toLowerCase()
+  if (s === "рассматриваю") {
+    return "bg-zinc-500/10 text-zinc-400 border-zinc-500/20"
+  }
+  if (s === "закупил" || s === "в работе") {
+    return "bg-blue-500/10 text-blue-400 border-blue-500/20"
+  }
+  if (s === "опубликовано" || s === "оплачено" || s === "успех" || s === "активен") {
+    return "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+  }
+  if (s === "слив" || s === "отказ" || s === "не окуплен") {
+    return "bg-red-500/10 text-red-400 border-red-500/20"
+  }
+  if (s === "бартер") {
+    return "bg-purple-500/10 text-purple-400 border-purple-500/20"
+  }
+  if (s === "забронировано" || s === "ожидает") {
+    return "bg-amber-500/10 text-amber-400 border-amber-500/20"
+  }
+  return "bg-zinc-500/10 text-zinc-400 border-zinc-500/20"
+}

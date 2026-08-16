@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
-import { cn, API } from "@/lib/utils"
-import { Users, TrendingUp, MessageSquare, BarChart, ArrowRight } from "lucide-react"
+import { cn, API, formatNumber } from "@/lib/utils"
+import { Users, TrendingUp, MessageSquare, BarChart, ArrowRight, Send, Instagram, Youtube, Share2, Flame } from "lucide-react"
 
 function authFetch(url: string, options: RequestInit = {}) {
   const t = localStorage.getItem("crm_token")
@@ -13,6 +13,29 @@ function authFetch(url: string, options: RequestInit = {}) {
 }
 
 const FUNNEL_STEPS = ["opened_bot", "started_test", "completed_test", "clicked_extended"]
+
+// Площадки и активы (мок — соцсети Антона)
+const social = [
+  { platform: "telegram", account: "Состояние Шумкина", followers: 1234, coverage: 2500, growth: 45 },
+  { platform: "instagram", account: "ahilleon", followers: 3720, coverage: 5800, growth: 112 },
+  { platform: "instagram", account: "tonyhypnosis", followers: 840, coverage: 3200, growth: 96 },
+  { platform: "vk", account: "VK (личная + сообщество)", followers: 4730, coverage: 400, growth: 8 },
+  { platform: "youtube", account: "YouTube", followers: 990, coverage: 4500, growth: 22 },
+]
+
+function getPlatformIcon(platform: string) {
+  switch (platform) {
+    case "telegram":
+      return <Send className="w-4 h-4 text-blue-400" />
+    case "instagram":
+      return <Instagram className="w-4 h-4 text-pink-400" />
+    case "youtube":
+      return <Youtube className="w-4 h-4 text-red-400" />
+    case "vk":
+    default:
+      return <Share2 className="w-4 h-4 text-sky-400" />
+  }
+}
 
 export function GlobalDashboard() {
   const { data, isLoading } = useQuery({
@@ -66,6 +89,50 @@ export function GlobalDashboard() {
     <div>
       <h1 className="text-xl font-semibold text-white mb-6">Сводка</h1>
 
+      {/* Площадки и активы */}
+      <div className="space-y-3 mb-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold text-white flex items-center gap-2">
+            <Flame className="w-4 h-4 text-orange-400" /> Площадки и активы
+          </h2>
+          <span className="text-xs text-zinc-400">{social.length} подключенных аккаунтов</span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          {social.map((item) => (
+            <Card
+              key={`${item.platform}-${item.account}`}
+              className="p-4 border-zinc-800 bg-zinc-900/50 hover:border-zinc-700 transition-colors relative overflow-hidden"
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-md bg-zinc-800 flex items-center justify-center border border-zinc-700/50">
+                    {getPlatformIcon(item.platform)}
+                  </div>
+                  <span className="text-xs font-semibold text-zinc-200 truncate max-w-[110px]" title={item.account}>
+                    {item.account}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-xs text-zinc-400 uppercase tracking-wider font-medium">Подписчики</div>
+                <div className="text-2xl font-bold text-white">{formatNumber(item.followers)}</div>
+              </div>
+
+              <div className="flex items-center justify-between pt-3 mt-3 border-t border-zinc-800/80 text-xs">
+                <span className="text-zinc-400">
+                  Охват: <strong className="text-zinc-200">{formatNumber(item.coverage)}</strong>
+                </span>
+                <span className="font-semibold text-emerald-400 flex items-center">
+                  +{item.growth}
+                </span>
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
+
       {/* Big Numbers */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <Card>
@@ -101,13 +168,13 @@ export function GlobalDashboard() {
         </Card>
       </div>
 
-      {/* Big Numbers RPP */}
-      {data?.rpp && (
+      {/* Big Numbers RPP — скрыто до готовности продукта */}
+      {/* {data?.rpp && (
         <div className="grid grid-cols-2 gap-4 mb-4">
           <Card><CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-zinc-500">РПП: Участников</CardTitle></CardHeader><CardContent><p className="text-2xl font-bold text-white">{data.rpp.total}</p></CardContent></Card>
           <Card><CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-zinc-500">РПП: Средний балл</CardTitle></CardHeader><CardContent><p className="text-2xl font-bold text-white">{data.rpp.avg_score}</p></CardContent></Card>
         </div>
-      )}
+      )} */}
 
       {/* Funnels */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">

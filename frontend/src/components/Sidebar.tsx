@@ -1,10 +1,11 @@
 import { useState, useCallback } from "react"
-import { Users, KanbanSquare, FileBadge, BarChart3, CheckSquare, LayoutDashboard, ClipboardList, ListTodo, Search, X, Bot } from "lucide-react"
+import { Users, KanbanSquare, FileBadge, BarChart3, CheckSquare, LayoutDashboard, ClipboardList, ListTodo, Search, X, Bot, Megaphone } from "lucide-react"
 
-export type Page = "dashboard" | "clients" | "funnel" | "deals" | "stats" | "tasks" | "antons-tasks" | "assistant-tasks" | "quiz" | "search"
+export type Page = "dashboard" | "ads" | "clients" | "funnel" | "deals" | "stats" | "tasks" | "antons-tasks" | "assistant-tasks" | "quiz" | "search"
 
 const NAV_ITEMS: { id: Page; label: string; icon: React.ReactNode }[] = [
   { id: "dashboard", label: "Сводка", icon: <LayoutDashboard size={18} /> },
+  { id: "ads", label: "Реклама", icon: <Megaphone size={18} /> },
   { id: "clients", label: "Контакты", icon: <Users size={18} /> },
   { id: "funnel", label: "Воронка", icon: <KanbanSquare size={18} /> },
   { id: "deals", label: "Сделки", icon: <FileBadge size={18} /> },

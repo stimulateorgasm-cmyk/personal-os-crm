@@ -11,6 +11,7 @@ import { StatsDashboard } from "@/pages/StatsDashboard"
 import TasksDashboard from "@/pages/TasksDashboard"
 import QuizDashboard from "@/pages/QuizDashboard"
 import { GlobalDashboard } from "@/pages/GlobalDashboard"
+import { AdsDashboard } from "@/pages/AdsDashboard"
 import { SearchResults } from "@/pages/SearchResults"
 const AntonsTasks = lazy(() => import("@/pages/AntonsTasks"))
 const AssistantTasks = lazy(() => import("@/pages/AssistantTasks"))
@@ -128,6 +129,7 @@ function CRMApp() {
         {page === "assistant-tasks" && <AssistantTasks onSelect={setSelectedAssistantTaskId} />}
             </Suspense>
         {page === "dashboard" && <GlobalDashboard />}
+        {page === "ads" && <AdsDashboard />}
         {page === "search" && <SearchResults onSelect={setSelectedClientId} />}
 
         <SheetProvider>
